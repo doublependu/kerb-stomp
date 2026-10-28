@@ -1,33 +1,24 @@
-# Starter Kit Racing
 
-Port of the Kenney "Starter Kit Racing" Godot 4.6 project to plain JavaScript and three.js with crashcat physics.
 
-## Structure
+# Instruction
 
-- `js/` — JavaScript port
-  - `main.js` — Entry point, scene setup, game loop
-  - `Physics.js` — crashcat wall colliders and sphere body (ported from Godot collision shapes)
-  - `Track.js` — GridMap track layout and piece placement
-  - `Vehicle.js` — Vehicle physics and controls
-  - `Camera.js` — Camera system
-  - `Controls.js` — Input handling
-  - `Particles.js` — Smoke trail effects
-  - `Audio.js` — Sound: positional sources on the vehicle, distance lowpass, outdoor reverb; engine and impacts are synthesized, skid is a sample with tone/pitch variation
-  - `EngineWorklet.js` — Procedural engine synth (AudioWorklet)
-  - `ImpactSound.js` — Procedural collision one-shots (rendered into AudioBuffers at init)
-- `models/` — GLB models shared between both versions
-- `audio/` — Sample assets (skid.ogg; engine and impacts are synthesized). The synth DSP cores are plain classes importable from Node for offline rendering/analysis.
-- `sprites/` — Sprite assets
+1. Do not commit or push. Let me do those.
+2. If there's only one agent working on the repo then use this checkout to make changes instead of a separate worktree
+3. I'll keep some of our chat history in folder "ai" that you can reference back to.
 
-## Key conventions
+Prompts and plans are numbered and paired in ai/ (prompt_0.md -> plan_0.md -> next_0.md). Write a new plan next to the prompt it answers.
+- next_0.md is a summary of the implementation and what to work on next as decided by Claude. 
 
-- GridMap cell size: 9.99 units, scale: 0.75 (`CELL_RAW` and `GRID_SCALE` in `Track.js`)
-- Track group has `position.y = -0.5` offset
-- Godot vehicle models use `root_scale = 0.5`
-- Wall colliders: friction 0.0, restitution 0.1
-- Corner colliders: arc center at `(-CELL_HALF, +CELL_HALF)` in local space, outer wall radius `2*CELL_HALF - 0.25`
-- Orientation mapping from Godot GridMap indices: `{ 0: 0°, 10: 180°, 16: 90°, 22: 270° }`
 
-## Porting reference
+# Spec
 
-Godot collision shapes are defined in `_godot/models/Library/mesh-library.tscn` as `ConcavePolygonShape3D` vertex data. The JS port approximates these with crashcat cuboid colliders.
+1. The web app needs to load in 2~3 sec on current average internet speed
+    1. This is initial load, i.e., time to user interaction. Progressive load later is fine
+    2. 1 sec will be great
+    3. 4 sec is absolute maximum
+2. The app needs to render and play well
+    1. on an average PC bought within 5 years, without dedicated GPU like nvidia
+    2. on entry level mobile phones and touch screen devices bought within 5 years
+    3. the client code should test the device and browser first and decide on what rendering levels are used as default with options to cut back or improve the graphics
+
+
