@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { SMOKE_URL } from './Assets.js';
 
 const POOL_SIZE = 1280;
 const PARTICLES_PER_EMIT = 3;
@@ -32,7 +33,7 @@ export class SmokeTrails {
 		sizeAttr.setUsage( THREE.DynamicDrawUsage );
 		geometry.setAttribute( 'aSize', sizeAttr );
 
-		const map = new THREE.TextureLoader().load( 'sprites/smoke.png' );
+		const map = new THREE.TextureLoader().load( SMOKE_URL );
 
 		const material = new THREE.PointsMaterial( {
 			map,

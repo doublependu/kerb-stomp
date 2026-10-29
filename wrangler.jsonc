@@ -1,0 +1,12 @@
+// Cloudflare Workers static assets: no Worker script, just the built site.
+// `npx wrangler login` once, then `npm run deploy`.
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "kerb-stomp",
+	"compatibility_date": "2026-10-01",
+	"assets": {
+		"directory": "./dist"
+	},
+	"workers_dev": true,
+	"preview_urls": false
+}

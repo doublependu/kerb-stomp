@@ -1,5 +1,9 @@
 import * as THREE from 'three';
 import { createImpactBuffer } from './ImpactSound.js';
+import { SKID_URL } from './Assets.js';
+// Loaded as source text and handed to the worklet as a Blob / data URL, so the
+// same code path works in dev, the hashed build and the single-file offline build.
+import engineWorkletSource from './EngineWorklet.js?raw';
 // RPM range is owned by the engine synth; import it so the 0..1 gear model
 // here and the worklet's normalization can't drift apart.
 import { RPM_IDLE, RPM_MAX } from './EngineWorklet.js';
@@ -105,6 +109,7 @@ export class GameAudio {
 		this.impactIndex = 0;
 		this.distanceFilters = [];
 		this.unlocked = false;
+		this.paused = false;
 
 		this.rpm = 0;
 		this.gear = 0;
@@ -163,7 +168,7 @@ export class GameAudio {
 
 		const loader = new THREE.AudioLoader();
 
-		loader.load( 'audio/skid.ogg', ( buffer ) => {
+		loader.load( SKID_URL, ( buffer ) => {
 
 			this.skidSound.setBuffer( buffer );
 			this.skidSound.setLoop( true );
@@ -192,6 +197,10 @@ export class GameAudio {
 		window.addEventListener( 'click', unlock );
 		window.addEventListener( 'touchstart', unlock );
 
+		// init() may run after the first gesture (main.js defers it past the
+		// start screen); sticky activation still allows resuming then
+		if ( navigator.userActivation && navigator.userActivation.hasBeenActive ) unlock();
+
 		// Pause all audio when the tab is hidden; resume once it's visible
 		// again (only if the user has already interacted to unlock playback).
 		document.addEventListener( 'visibilitychange', () => {
@@ -200,7 +209,7 @@ export class GameAudio {
 
 				if ( ctx.state === 'running' ) ctx.suspend();
 
-			} else if ( this.unlocked && ctx.state === 'suspended' ) {
+			} else if ( this.unlocked && ! this.paused && ctx.state === 'suspended' ) {
 
 				ctx.resume();
 
@@ -214,7 +223,24 @@ export class GameAudio {
 
 		const ctx = this.listener.context;
 
-		await ctx.audioWorklet.addModule( new URL( './EngineWorklet.js', import.meta.url ) );
+		// Blob URL normally; a file:// page (the offline build) has an opaque
+		// origin that rejects blob:null worklets, so fall back to a data: URL
+		const blob = new Blob( [ engineWorkletSource ], { type: 'text/javascript' } );
+		const url = URL.createObjectURL( blob );
+
+		try {
+
+			await ctx.audioWorklet.addModule( url );
+
+		} catch {
+
+			await ctx.audioWorklet.addModule( 'data:text/javascript,' + encodeURIComponent( engineWorkletSource ) );
+
+		} finally {
+
+			URL.revokeObjectURL( url );
+
+		}
 
 		const node = new AudioWorkletNode( ctx, 'engine-sound', {
 			numberOfInputs: 0,
@@ -292,6 +318,8 @@ export class GameAudio {
 	}
 
 	update( dt, speed, throttle, driftIntensity ) {
+
+		if ( ! this.listener ) return;
 
 		const absSpeed = THREE.MathUtils.clamp( Math.abs( speed ), 0, 1 );
 		// Only forward throttle counts as engine load. Brake/reverse (throttle < 0)
@@ -377,7 +405,7 @@ export class GameAudio {
 
 			const skidPitch = THREE.MathUtils.clamp( Math.abs( speed ), 1, 3 );
 			const curPitch = this.skidSound.getPlaybackRate();
-			this.skidSound.setPlaybackRate( THREE.MathUtils.lerp( curPitch, skidPitch, 0.1 ) );
+			this.skidSound.setPlaybackRate( THREE.MathUtils.lerp( curPitch, skidPitch, 1 - Math.pow( 0.9, dt * 60 ) ) );
 
 			// Tone opens as the drift digs in: light slides stay dull,
 			// hard drifts scream
@@ -385,6 +413,26 @@ export class GameAudio {
 				remap( driftIntensity, 0.5, 1.6, 0, 1 ), 0, 1
 			);
 			this.skidTone.frequency.setTargetAtTime( 2500 + intensity01 * 7500, now, 0.1 );
+
+		}
+
+	}
+
+	// Game pause: silence everything (the context also suspends while the tab
+	// is hidden, and must stay suspended on return if the game is paused)
+	setPaused( paused ) {
+
+		this.paused = paused;
+		if ( ! this.listener ) return;
+		const ctx = this.listener.context;
+
+		if ( paused ) {
+
+			if ( ctx.state === 'running' ) ctx.suspend();
+
+		} else if ( this.unlocked && ctx.state === 'suspended' ) {
+
+			ctx.resume();
 
 		}
 

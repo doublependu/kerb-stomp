@@ -53,6 +53,12 @@ export class Vehicle {
 
 		this.driftIntensity = 0;
 
+		// Where a fall off the world puts the truck back (main.js sets it from
+		// the track's finish line on custom maps)
+		this.spawnPosition = [ 3.5, 0.5, 5 ];
+		this.spawnAngle = 0;
+		this.resets = 0;
+
 	}
 
 	init( model ) {
@@ -150,7 +156,7 @@ export class Vehicle {
 		if ( _tmpVec.y > 0.5 ) {
 
 			const targetQuat = this.alignWithY( this.container.quaternion, _up );
-			this.container.quaternion.slerp( targetQuat, 0.2 );
+			this.container.quaternion.slerp( targetQuat, 1 - Math.pow( 0.8, dt * 60 ) );
 
 		}
 
@@ -189,25 +195,7 @@ export class Vehicle {
 			dt
 		);
 
-		if ( this.spherePos.y < - 10 ) {
-
-			if ( this.rigidBody ) {
-
-				rigidBody.setPosition( this.physicsWorld, this.rigidBody, [ 3.5, 0.5, 5 ], false );
-				rigidBody.setLinearVelocity( this.physicsWorld, this.rigidBody, [ 0, 0, 0 ] );
-				rigidBody.setAngularVelocity( this.physicsWorld, this.rigidBody, [ 0, 0, 0 ] );
-
-			}
-
-			this.spherePos.set( 3.5, 0.5, 5 );
-			this.sphereVel.set( 0, 0, 0 );
-			this.linearSpeed = 0;
-			this.angularSpeed = 0;
-			this.acceleration = 0;
-			this.container.rotation.set( 0, 0, 0 );
-			this.container.quaternion.identity();
-
-		}
+		if ( this.spherePos.y < - 10 ) this.reset();
 
 		this.container.position.set(
 			this.spherePos.x,
@@ -227,6 +215,29 @@ export class Vehicle {
 
 		this.driftIntensity = Math.abs( this.linearSpeed - this.acceleration ) +
 			( this.bodyNode ? Math.abs( this.bodyNode.rotation.z ) * 2 : 0 );
+
+	}
+
+	reset() {
+
+		const [ x, y, z ] = this.spawnPosition;
+
+		if ( this.rigidBody ) {
+
+			rigidBody.setPosition( this.physicsWorld, this.rigidBody, [ x, y, z ], false );
+			rigidBody.setLinearVelocity( this.physicsWorld, this.rigidBody, [ 0, 0, 0 ] );
+			rigidBody.setAngularVelocity( this.physicsWorld, this.rigidBody, [ 0, 0, 0 ] );
+
+		}
+
+		this.spherePos.set( x, y, z );
+		this.sphereVel.set( 0, 0, 0 );
+		this.prevModelPos.set( x, y - 0.5, z );
+		this.linearSpeed = 0;
+		this.angularSpeed = 0;
+		this.acceleration = 0;
+		this.container.quaternion.setFromAxisAngle( _up, this.spawnAngle );
+		this.resets ++;
 
 	}
 
@@ -265,7 +276,7 @@ export class Vehicle {
 
 		for ( const wheel of this.wheels ) {
 
-			wheel.rotation.x += this.acceleration;
+			wheel.rotation.x += this.acceleration * dt * 60;
 
 		}
 

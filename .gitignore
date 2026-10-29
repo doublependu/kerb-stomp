@@ -1,3 +1,8 @@
 _benchmark/
 _godot/
 .DS_Store
+node_modules/
+dist/
+dist-offline/
+.wrangler/
+playtests/

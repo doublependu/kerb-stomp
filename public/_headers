@@ -1,0 +1,9 @@
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# The offline single-file build. Cloudflare serves it at /kerb-stomp (the
+# .html URL redirects there), so both paths force a download.
+/kerb-stomp.html
+  Content-Disposition: attachment; filename="kerb-stomp.html"
+/kerb-stomp
+  Content-Disposition: attachment; filename="kerb-stomp.html"

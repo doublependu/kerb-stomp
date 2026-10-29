@@ -4,11 +4,20 @@ const _desired = new THREE.Vector3();
 const _delta = new THREE.Vector3();
 const _lookPoint = new THREE.Vector3();
 
+const BASE_FOV = 40;
+const MAX_FOV = 60;
+const BASE_FAR = 60;
+
+// Narrowest ground half-width (world units) the view may show across the
+// screen. A 16:9 landscape view shows ~10; portrait phones fall far below
+// that at the base FOV, so they widen the FOV and then pull the camera back.
+const MIN_GROUND_HALF_WIDTH = 7;
+
 export class Camera {
 
 	constructor() {
 
-		this.camera = new THREE.PerspectiveCamera( 40, window.innerWidth / window.innerHeight, 0.1, 60 );
+		this.camera = new THREE.PerspectiveCamera( BASE_FOV, window.innerWidth / window.innerHeight, 0.1, BASE_FAR );
 
 		// Matches Godot View: 45° azimuth, 35° elevation, distance 16
 		this.offset = new THREE.Vector3( 9.27, 9.18, 9.27 );
@@ -26,6 +35,18 @@ export class Camera {
 		this.cameraSmoothing = 2.0;
 		this.deadzoneRadius = 5.0;
 		this.screenShiftUp = 1.0;
+
+		// Set per viewport: dolly factor and deadzone radii along screen
+		// right / screen up (an ellipse on narrow screens)
+		this.zoomOut = 1;
+		this.deadzoneX = this.deadzoneRadius;
+		this.deadzoneY = this.deadzoneRadius;
+
+		const distance = this.offset.length();
+		const tanBase = Math.tan( THREE.MathUtils.degToRad( BASE_FOV / 2 ) );
+		this.sinElevation = this.offset.y / distance;
+		this.refHalfX = distance * tanBase * 16 / 9;
+		this.refHalfY = distance * tanBase / this.sinElevation;
 
 		this.smoothedDesired = new THREE.Vector3();
 		this.initialized = false;
@@ -46,28 +67,55 @@ export class Camera {
 			new THREE.Matrix4().makeBasis( this.camRightXZ, new THREE.Vector3( 0, 1, 0 ), this.camForwardXZ )
 		);
 
-		window.addEventListener( 'resize', () => {
+	}
 
-			this.camera.aspect = window.innerWidth / window.innerHeight;
-			this.camera.updateProjectionMatrix();
+	// Extra camera distance from the dolly, for pushing fog and far plane out
+	get extraDistance() {
 
-		} );
+		return ( this.zoomOut - 1 ) * this.offset.length();
+
+	}
+
+	setViewport( width, height ) {
+
+		const aspect = width / height;
+		const distance = this.offset.length();
+
+		let tanV = Math.tan( THREE.MathUtils.degToRad( BASE_FOV / 2 ) );
+		const minTanH = MIN_GROUND_HALF_WIDTH / distance;
+		if ( tanV * aspect < minTanH ) tanV = minTanH / aspect;
+
+		const tanMax = Math.tan( THREE.MathUtils.degToRad( MAX_FOV / 2 ) );
+		this.zoomOut = Math.max( 1, tanV / tanMax );
+		tanV = Math.min( tanV, tanMax );
+
+		this.camera.aspect = aspect;
+		this.camera.fov = THREE.MathUtils.radToDeg( 2 * Math.atan( tanV ) );
+		this.camera.far = BASE_FAR + this.extraDistance;
+		this.camera.updateProjectionMatrix();
+
+		// Shrink the deadzone along a screen axis that shows less ground than
+		// the 16:9 reference, so the car never leads itself off the edge
+		const halfX = distance * this.zoomOut * tanV * aspect;
+		const halfY = distance * this.zoomOut * tanV / this.sinElevation;
+		this.deadzoneX = this.deadzoneRadius * Math.min( 1, halfX / this.refHalfX );
+		this.deadzoneY = this.deadzoneRadius * Math.min( 1, halfY / this.refHalfY );
 
 	}
 
 	update( dt, target, velocity ) {
 
-		const radius = this.deadzoneRadius;
-		const radiusSq = radius * radius;
+		const rx = this.deadzoneX;
+		const ry = this.deadzoneY;
 
-		// Lead = velocity projected onto camera-aligned ground basis, scaled, clamped to the deadzone disk.
-		// Becomes the camera's offset from the car: car settles at the trailing edge of the circle.
+		// Lead = velocity projected onto camera-aligned ground basis, scaled, clamped to the deadzone ellipse.
+		// Becomes the camera's offset from the car: car settles at the trailing edge of the ellipse.
 		let leadX = velocity.dot( this.camRightXZ ) * this.leadFactor;
 		let leadY = velocity.dot( this.camForwardXZ ) * this.leadFactor;
-		const leadLenSq = leadX * leadX + leadY * leadY;
-		if ( leadLenSq > radiusSq ) {
+		const leadNorm = ( leadX / rx ) ** 2 + ( leadY / ry ) ** 2;
+		if ( leadNorm > 1 ) {
 
-			const k = radius / Math.sqrt( leadLenSq );
+			const k = 1 / Math.sqrt( leadNorm );
 			leadX *= k;
 			leadY *= k;
 
@@ -85,11 +133,10 @@ export class Camera {
 		_delta.subVectors( target, this.smoothedDesired );
 		const offsetX = _delta.dot( this.camRightXZ );
 		const offsetY = _delta.dot( this.camForwardXZ );
-		const offsetLenSq = offsetX * offsetX + offsetY * offsetY;
-		if ( offsetLenSq > radiusSq ) {
+		const offsetNorm = ( offsetX / rx ) ** 2 + ( offsetY / ry ) ** 2;
+		if ( offsetNorm > 1 ) {
 
-			const offsetLen = Math.sqrt( offsetLenSq );
-			const k = ( offsetLen - radius ) / offsetLen;
+			const k = 1 - 1 / Math.sqrt( offsetNorm );
 			this.smoothedDesired
 				.addScaledVector( this.camRightXZ, offsetX * k )
 				.addScaledVector( this.camForwardXZ, offsetY * k );
@@ -99,12 +146,12 @@ export class Camera {
 		// Shift the entire view (camera + lookAt) so smoothedDesired sits higher on screen.
 		_lookPoint.copy( this.smoothedDesired ).addScaledVector( this.camForwardXZ, - this.screenShiftUp );
 
-		this.camera.position.copy( _lookPoint ).add( this.offset );
+		this.camera.position.copy( _lookPoint ).addScaledVector( this.offset, this.zoomOut );
 		this.camera.lookAt( _lookPoint );
 
 		this.debug.position.copy( this.smoothedDesired );
 		this.debug.position.y += 0.05;
-		this.debug.scale.set( radius, 1, radius );
+		this.debug.scale.set( rx, 1, ry );
 
 	}
 

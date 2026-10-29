@@ -90,8 +90,8 @@ export class LapTimer {
 		style.textContent = `
 			#lap-timer {
 				position: absolute;
-				top: 12px;
-				left: 12px;
+				top: calc(12px + env(safe-area-inset-top, 0px));
+				left: calc(12px + env(safe-area-inset-left, 0px));
 				color: #fff;
 				font: 600 13px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 				background: rgba(0,0,0,0.5);

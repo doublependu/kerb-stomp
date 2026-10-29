@@ -2,15 +2,38 @@
 <html lang="en">
 <head>
 	<meta charset="utf-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-	<title>Racing</title>
+	<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+	<meta name="theme-color" content="#1c2029">
+	<meta name="description" content="Kerb Stomp: a tiny time-trial racer in the browser.">
+	<title>Kerb Stomp</title>
+	<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231c2029'/%3E%3Cpath d='M7 20h18l-2-6H11z' fill='%23ffc83d'/%3E%3Ccircle cx='11' cy='22' r='3' fill='%23fff'/%3E%3Ccircle cx='21' cy='22' r='3' fill='%23fff'/%3E%3C/svg%3E">
 	<style>
-		body { margin: 0; overflow: hidden; background: #000; }
-		canvas { display: block; touch-action: none; }
+		:root {
+			--safe-top: env(safe-area-inset-top, 0px);
+			--safe-right: env(safe-area-inset-right, 0px);
+			--safe-bottom: env(safe-area-inset-bottom, 0px);
+			--safe-left: env(safe-area-inset-left, 0px);
+			--font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+			--accent: #ffc83d;
+		}
+		html, body {
+			margin: 0;
+			height: 100%;
+			overflow: hidden;
+			background: #1c2029;
+			overscroll-behavior: none;
+			touch-action: none;
+			user-select: none;
+			-webkit-user-select: none;
+			-webkit-touch-callout: none;
+			-webkit-tap-highlight-color: transparent;
+		}
+		canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+
 		.corner-link {
 			position: absolute;
 			color: #1f2430;
-			font: 400 13px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+			font: 400 13px var(--font);
 			text-decoration: none;
 			background: rgba(255,255,255,0.92);
 			padding: 9px 18px;
@@ -21,35 +44,198 @@
 			-webkit-backdrop-filter: blur(12px);
 			z-index: 20;
 			transition: background 0.15s;
+			touch-action: manipulation;
 		}
 		.corner-link:hover { background: #fff; }
-		#editor-link { bottom: 12px; right: 12px; }
-		#github-link { top: 12px; right: 12px; padding: 8px; line-height: 0; }
-		#github-link svg { display: block; width: 20px; height: 20px; }
+		#editor-link { bottom: calc(12px + var(--safe-bottom)); right: calc(12px + var(--safe-right)); }
+		#pause-btn { top: calc(12px + var(--safe-top)); right: calc(12px + var(--safe-right)); padding: 8px; line-height: 0; cursor: pointer; }
+		#pause-btn svg { display: block; width: 20px; height: 20px; }
+		#version {
+			position: absolute;
+			bottom: calc(10px + var(--safe-bottom));
+			left: calc(12px + var(--safe-left));
+			color: rgba(255,255,255,0.75);
+			font: 500 11px var(--font);
+			letter-spacing: 0.04em;
+			text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+			pointer-events: none;
+			z-index: 15;
+		}
+		body:not([data-state="playing"]) #pause-btn,
+		body:not([data-state="playing"]) #editor-link,
+		body:not([data-state="playing"]) #lap-timer { visibility: hidden; }
+
+		/* Shell overlay: loading → ready → paused, plus error */
+
+		#shell {
+			position: fixed;
+			inset: 0;
+			z-index: 40;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			padding: calc(16px + var(--safe-top)) calc(16px + var(--safe-right)) calc(16px + var(--safe-bottom)) calc(16px + var(--safe-left));
+			box-sizing: border-box;
+			color: #fff;
+			font: 400 14px/1.45 var(--font);
+			background: radial-gradient(ellipse at 50% 40%, #2e3442 0%, #1c2029 70%);
+			transition: opacity 0.25s, background 0.25s;
+			overflow: hidden;
+		}
+		#shell[data-state="ready"], #shell[data-state="paused"] { background: rgba(20, 23, 31, 0.55); }
+		#shell[data-state="playing"] { opacity: 0; pointer-events: none; }
+		#shell[data-state="ready"] { cursor: pointer; }
+		#shell .when-loading, #shell .when-ready, #shell .when-paused, #shell .when-error { display: none; }
+		#shell[data-state="loading"] .when-loading,
+		#shell[data-state="ready"] .when-ready,
+		#shell[data-state="paused"] .when-paused,
+		#shell[data-state="error"] .when-error { display: block; }
+
+		#shell .panel {
+			width: min(420px, 100%);
+			max-height: 100%;
+			overflow-y: auto;
+			touch-action: pan-y;
+			box-sizing: border-box;
+			padding: 26px 26px 20px;
+			border-radius: 22px;
+			background: rgba(16, 19, 26, 0.72);
+			border: 1px solid rgba(255,255,255,0.08);
+			box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+			backdrop-filter: blur(14px);
+			-webkit-backdrop-filter: blur(14px);
+			text-align: center;
+		}
+		#shell h1 {
+			margin: 0;
+			font: italic 900 clamp(34px, 9vw, 46px)/1 var(--font);
+			letter-spacing: -0.02em;
+			text-transform: uppercase;
+		}
+		#shell h1 span { color: var(--accent); }
+		#shell .tagline { margin: 8px 0 22px; opacity: 0.7; }
+		#shell h2 { margin: 0 0 14px; font: 700 13px var(--font); letter-spacing: 0.14em; text-transform: uppercase; opacity: 0.65; }
+
+		.progress { height: 6px; border-radius: 3px; background: rgba(255,255,255,0.12); overflow: hidden; }
+		.progress-bar { height: 100%; background: var(--accent); transform-origin: left; transform: scaleX(0); transition: transform 0.2s; }
+		.status { margin: 10px 0 0; font-size: 12px; opacity: 0.65; font-variant-numeric: tabular-nums; }
+
+		.start-hint { margin: 4px 0 0; font: 700 18px var(--font); animation: pulse 1.6s ease-in-out infinite; }
+		.hint-touch, .touch-only { display: none; }
+		@media (hover: none) and (pointer: coarse) {
+			.hint-key, .key-only { display: none; }
+			.hint-touch, .touch-only { display: inline; }
+		}
+		@keyframes pulse { 50% { opacity: 0.55; } }
+
+		#shell button, #shell .button {
+			font: 600 14px var(--font);
+			color: #fff;
+			background: rgba(255,255,255,0.1);
+			border: 1px solid rgba(255,255,255,0.12);
+			border-radius: 999px;
+			padding: 10px 18px;
+			cursor: pointer;
+			text-decoration: none;
+			touch-action: manipulation;
+			transition: background 0.15s;
+		}
+		#shell button:hover, #shell .button:hover { background: rgba(255,255,255,0.18); }
+		#shell button.primary { width: 100%; padding: 14px; font-size: 16px; color: #1c2029; background: var(--accent); border-color: transparent; }
+		#shell button.primary:hover { background: #ffd666; }
+		#shell [hidden] { display: none !important; }
+
+		.setting { margin: 18px 0 0; }
+		.setting-label { display: block; margin-bottom: 8px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.6; }
+		.segmented { display: inline-flex; padding: 3px; gap: 2px; border-radius: 999px; background: rgba(255,255,255,0.08); }
+		#shell .segmented button { padding: 7px 12px; font-size: 13px; background: transparent; border-color: transparent; }
+		#shell .segmented button.active { background: #fff; color: #1c2029; }
+		.setting-note { margin: 8px 0 0; min-height: 1.45em; font-size: 12px; opacity: 0.65; }
+		#shell #reload-btn { margin-top: 6px; padding: 6px 14px; font-size: 12px; }
+		.row { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin: 16px 0 0; }
+		.controls-help { margin: 16px 0 0; font-size: 12px; opacity: 0.6; }
+		.error-message { margin: 0; color: #ffb0a8; }
+
+		.links { display: flex; flex-wrap: wrap; gap: 6px 16px; justify-content: center; margin: 22px 0 0; padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.08); font-size: 13px; }
+		.links a { color: rgba(255,255,255,0.85); text-decoration: none; border-bottom: 1px solid rgba(255,255,255,0.3); touch-action: manipulation; }
+		.links a:hover { color: #fff; border-color: #fff; }
+
+		.fork-ribbon {
+			position: absolute;
+			top: calc(38px + var(--safe-top));
+			right: calc(-52px + var(--safe-right));
+			width: 220px;
+			padding: 7px 0;
+			transform: rotate(45deg);
+			background: var(--accent);
+			color: #1c2029;
+			font: 800 12px var(--font);
+			letter-spacing: 0.04em;
+			text-align: center;
+			text-decoration: none;
+			text-transform: uppercase;
+			box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+			z-index: 1;
+			touch-action: manipulation;
+		}
+		.fork-ribbon:hover { background: #ffd666; }
 	</style>
-	<script type="importmap">
-	{
-		"imports": {
-			"three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js",
-			"three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/",
-			"crashcat": "https://esm.sh/crashcat@0.0.3"
-		}
-	}
-	</script>
 </head>
-<body>
-	<a id="github-link" class="corner-link" href="https://github.com/mrdoob/Starter-Kit-Racing" aria-label="View source on GitHub">
-		<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56v-2.05c-3.2.7-3.88-1.36-3.88-1.36-.52-1.34-1.28-1.69-1.28-1.69-1.05-.71.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.71 1.26 3.37.96.1-.75.4-1.26.73-1.55-2.55-.29-5.23-1.28-5.23-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.51-1.46.11-3.05 0 0 .97-.31 3.18 1.18.92-.26 1.91-.39 2.89-.39.98 0 1.97.13 2.89.39 2.21-1.5 3.18-1.18 3.18-1.18.62 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.42-2.69 5.39-5.25 5.68.41.36.78 1.06.78 2.13v3.16c0 .31.21.67.79.56C20.21 21.39 23.5 17.07 23.5 12 23.5 5.65 18.35.5 12 .5z"/></svg>
-	</a>
-	<a id="editor-link" class="corner-link" href="editor.html">Create new track</a>
-	<script>
-		const map = new URLSearchParams( location.search ).get( 'map' );
-		if ( map ) {
-			const link = document.getElementById( 'editor-link' );
-			link.href = 'editor.html?map=' + map;
-			link.textContent = 'Edit this track';
-		}
-	</script>
+<body data-state="loading">
+	<div id="shell" data-state="loading">
+		<a class="fork-ribbon" href="%VITE_REPO_URL%" target="_blank" rel="noopener">Fork me on GitHub</a>
+		<div class="panel" role="dialog" aria-labelledby="shell-title">
+			<h1 id="shell-title">Kerb <span>Stomp</span></h1>
+			<p class="tagline">Tiny trucks, tight kerbs. Beat your best lap.</p>
+
+			<div class="when-loading" aria-live="polite">
+				<div class="progress"><div class="progress-bar"></div></div>
+				<p class="status">Loading…</p>
+			</div>
+
+			<div class="when-ready">
+				<p class="start-hint"><span class="hint-key">Press any key</span><span class="hint-touch">Tap</span> to drive</p>
+			</div>
+
+			<div class="when-paused">
+				<h2>Paused</h2>
+				<button id="resume-btn" class="primary">Resume</button>
+				<div class="setting">
+					<span class="setting-label">Graphics</span>
+					<div class="segmented" role="group" aria-label="Graphics quality">
+						<button data-quality="auto">Auto</button>
+						<button data-quality="low">Low</button>
+						<button data-quality="medium">Medium</button>
+						<button data-quality="high">High</button>
+					</div>
+					<p class="setting-note" id="quality-note"></p>
+					<button id="reload-btn" hidden>Reload now</button>
+				</div>
+				<div class="row">
+					<button id="fullscreen-btn">Fullscreen</button>
+					<a class="button editor-link" href="editor.html">Create new track</a>
+				</div>
+				<p class="controls-help">
+					<span class="key-only">WASD / arrow keys or a gamepad to drive · Esc or P to pause</span>
+					<span class="touch-only">Hold and drag anywhere to steer: the truck drives toward your thumb</span>
+				</p>
+			</div>
+
+			<div class="when-error">
+				<p class="error-message"></p>
+			</div>
+
+			<nav class="links">
+				<a href="https://maize.live" target="_blank" rel="noopener">More games on Maize.Live</a>
+				<a id="download-link" href="kerb-stomp.html" download="kerb-stomp.html">Download to play offline</a>
+			</nav>
+		</div>
+	</div>
+	<button id="pause-btn" class="corner-link" aria-label="Pause">
+		<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
+	</button>
+	<a id="editor-link" class="corner-link editor-link" href="editor.html">Create new track</a>
+	<div id="version">%VITE_APP_VERSION%</div>
 	<script type="module" src="js/main.js"></script>
 </body>
 </html>

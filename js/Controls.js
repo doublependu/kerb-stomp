@@ -13,9 +13,18 @@ export class Controls {
 		this.steerPointerId = null;
 		this.steerStartX = 0;
 		this.steerStartY = 0;
+		this.cancelSteer = () => {};
+
+		// Gamepad edge state (Start pauses, any button dismisses the start screen)
+		this.prevStart = false;
+		this.prevAnyButton = false;
 
 		window.addEventListener( 'keydown', ( e ) => this.keys[ e.code ] = true );
 		window.addEventListener( 'keyup', ( e ) => this.keys[ e.code ] = false );
+
+		// A keyup that lands while the window is unfocused never arrives, which
+		// would leave the truck driving on its own after alt-tab
+		window.addEventListener( 'blur', () => this.reset() );
 
 		this.setupTouchUI();
 
@@ -103,11 +112,30 @@ export class Controls {
 		steerZone.addEventListener( 'pointerup', endSteer );
 		steerZone.addEventListener( 'pointercancel', endSteer );
 
+		this.cancelSteer = () => {
+
+			if ( this.steerPointerId === null ) return;
+			if ( steerZone.hasPointerCapture( this.steerPointerId ) ) steerZone.releasePointerCapture( this.steerPointerId );
+			endSteer( { pointerId: this.steerPointerId } );
+
+		};
+
+		// The joystick origin is in screen space and meaningless after rotation
+		window.addEventListener( 'orientationchange', () => this.cancelSteer() );
+
+	}
+
+	reset() {
+
+		this.keys = {};
+		this.cancelSteer();
+
 	}
 
 	update() {
 
 		let x = 0, z = 0;
+		let start = false, anyButton = false;
 
 		// Keyboard
 
@@ -131,6 +159,9 @@ export class Controls {
 			const lt = gp.buttons[ 6 ] ? gp.buttons[ 6 ].value : 0;
 
 			if ( rt > 0.1 || lt > 0.1 ) z = rt - lt;
+
+			start = gp.buttons[ 9 ] ? gp.buttons[ 9 ].pressed : false;
+			anyButton = gp.buttons.some( ( b ) => b.pressed );
 
 			break;
 
@@ -156,7 +187,12 @@ export class Controls {
 		this.x = x;
 		this.z = z;
 
-		return { x, z, touchActive: this.touchActive };
+		const pause = start && ! this.prevStart;
+		const pressed = anyButton && ! this.prevAnyButton;
+		this.prevStart = start;
+		this.prevAnyButton = anyButton;
+
+		return { x, z, touchActive: this.touchActive, pause, anyButton: pressed };
 
 	}
 

@@ -1,0 +1,25 @@
+{
+  "name": "kerb-stomp",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build --mode offline && vite build && node scripts/copy-offline.mjs",
+    "preview": "vite preview",
+    "preview:cf": "npm run build && wrangler dev",
+    "deploy": "node scripts/check-clean.mjs && npm run build && wrangler deploy",
+    "playtest": "node scripts/playtest/run.mjs",
+    "perf:load": "node scripts/measure-load.mjs"
+  },
+  "dependencies": {
+    "crashcat": "0.0.3",
+    "three": "0.185.1"
+  },
+  "devDependencies": {
+    "playwright": "^1.64.1",
+    "vite": "^8.3.5",
+    "vite-plugin-singlefile": "^2.3.4",
+    "wrangler": "^4.155.0"
+  }
+}

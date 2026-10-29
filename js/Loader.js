@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { COLORMAP_URL } from './Assets.js';
 
-const sharedColormap = new THREE.TextureLoader().load( 'models/Textures/colormap.png' );
+const sharedColormap = new THREE.TextureLoader().load( COLORMAP_URL );
 sharedColormap.colorSpace = THREE.SRGBColorSpace;
 sharedColormap.flipY = false;
 
