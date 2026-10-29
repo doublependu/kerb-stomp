@@ -21,3 +21,7 @@
 7. The winner, 1st, 2nd, 3rd places should get a badge or something
     - if there are 3 or less cars playing then there's only 1 winner, otherwise 3. 
     - highlight the winning car in a round table display
+8. add friction to the kerb
+    - driving into and along the kerb slows you down
+
+    
