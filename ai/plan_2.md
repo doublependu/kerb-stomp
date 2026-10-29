@@ -1,6 +1,6 @@
-# Plan 2: hills, jumps and an unsealed cliff road; the magic wand; a figure-8; scenery that marks the corners; faster NPCs; handling by mass
+# Plan 2: hills, jumps and an unsealed cliff road; the magic wand; a figure-8; scenery that marks the corners; faster NPCs; handling by mass; a start fly-over; podium badges; kerbs that slow you
 
-Answers `ai/prompt_2.md`. Nothing here is implemented yet.
+Answers `ai/prompt_2.md`, all eight features. Nothing here is implemented yet.
 
 ## Where the project stands
 
@@ -32,6 +32,19 @@ Answers `ai/prompt_2.md`. Nothing here is implemented yet.
   - NPCs blocked behind another car lift to 60% throttle.
   - In a first race, the field re-aims at your first lap, and that lap includes the standing start.
 - **Cars all drive the same.** Mass (∝ footprint area) only affects car-to-car contact. By model volume, the cars range from 0.28 (karts) to 1.36 (garbage truck), with the yellow truck at 1.
+  - Contact today is a 2D impulse with a yaw kick (`js/CarCollisions.js`), so cars get shoved and spun but never leave the ground.
+  - `Vehicle` only pulls the body back upright while it's tilted less than 60° (`js/Vehicle.js:192`), so a car that ends up on its side or roof would stay there.
+- **Kerbs have no effect.** Measured from the Starter Kit pieces, in metres from the lane centre:
+  - asphalt to 2.63 m
+  - a raised yellow rumble strip from 2.63 to 3.0 m
+  - the red-and-white kerb from 3.0 to 3.38 m
+  - the wall face at 3.38 m
+
+  The bands are the same on straights, the finish piece, and both sides of corners. Physically the kerbs are just part of the flat ground box.
+  - The sphere touches the wall when the car's centre is 2.88 m out, so a car riding the wall always has its outer wheels on the kerb.
+- **Race start and finish.**
+  - Pressing Race goes straight to the 3-2-1 countdown (`js/main.js:572-590`).
+  - The results are an HTML list over the race view (`Shell.showResults`). It refreshes while the rest of the field finishes, and your row is highlighted. There are no badges.
 - **The new Kenney kits** (in `ref/`, CC0, all except the Racing Kit sample a 512² colormap like the Starter Kit):
 
   | Kit | Models | Useful for | Raw size |
@@ -50,21 +63,26 @@ Answers `ai/prompt_2.md`. Nothing here is implemented yet.
 
 | # | Decision | Default chosen | Why |
 |---|---|---|---|
-| D1 | Which tracks get hills | Two new tracks: **Bathurst** (mountain climb, unsealed cliff-top section, crests to jump) and **Suzuka** (the figure-8, whose bridge ramps and crest give hills too). Classic, Indianapolis, Monza and Monaco stay flat and drive exactly as today | Changing an existing track invalidates its NPC calibration and everyone's saved best laps. Both real circuits are known for elevation, and Suzuka is the famous circuit that crosses itself |
+| D1 | Which tracks get hills | Two new tracks: **Bathurst** (mountain climb, unsealed cliff-top section, crests to jump) and **Suzuka** (the figure-8, whose bridge ramps and crest give hills too). Classic, Indianapolis, Monza and Monaco stay flat and drive exactly as today | Hills on an existing track would change its character, and it would need a whole new calibration. Both real circuits are known for elevation, and Suzuka is the famous circuit that crosses itself |
 | D2 | How the figure-8 crosses | A **bridge**: the back straight passes over the Degner–Hairpin section, as at the real Suzuka | No cross traffic, so NPCs and lap logic need nothing special. The alternative is a flat X crossing (figure-8 oval style, with T-bones). It's more chaotic and needs NPCs that look both ways. Say if you want that instead, or as well |
 | D3 | Height range | Road 0–6 m. The world ground stays flat at y = 0, and hills are terrain raised around the road. No road dips below ground | Valleys are the low sections between hills. Below-ground cuttings would mean carving the flat ground and its collider. 6 m is ~4 car lengths: big on screen, and the camera never ends up in a trench |
 | D4 | "Unsealed" | A gravel version of the track pieces: no wall on the outside (the cliff side), a low fence on the inside, less grip, dust instead of smoke. Only on Bathurst's mountain top | With an inside wall, the only way off is over the cliff, so leaving the track always means the wand, never an awkward drive back across grass |
-| D5 | When the wand comes | A car is out once it's more than 1.5 m beyond the road edge, or more than 2 m below the road surface, for 0.5 s. A fall from a cliff gets ~1 s, so you see yourself go over. It also replaces every other respawn: falls, stuck or wrong-way NPCs, a car tipped on its roof, and the R key | One recovery that everyone recognises. The race clock keeps running and the other cars keep driving, which is the penalty the prompt describes |
+| D5 | When the wand comes | A car is out once it's more than 1.5 m beyond the road edge, or more than 2 m below the road surface, for 0.5 s. A fall from a cliff gets ~1 s, so you see yourself go over. It also replaces every other respawn: falls, stuck or wrong-way NPCs, a car left on its side or roof after a hit, and the R key | One recovery that everyone recognises. The race clock keeps running and the other cars keep driving, which is the penalty the prompt describes |
 | D6 | Editor | No hills or crossings in the editor. "Edit this track" is hidden on Bathurst and Suzuka | The `?map=` codec has spare bits for more piece types, but heights would need a format change. The prompt doesn't ask for it |
 | D7 | Building scale and placement | One city-kit tile ≈ 0.7 of a track cell, so a house fills about one grid cell next to the road, at about twice the height of the Starter Kit trees. Buildings face the nearest road | It keeps the scenery on the same grid as the forest tiles, so placement, chunked instancing and culling work as they do now |
-| D8 | When scenery loads | After the game is interactive, behind the setup screen. The critical path keeps only what it loads today. On medium and high, the light-probe bake waits for the scenery (the hemisphere light covers until then) | The spec's load time. The bake also leaves the critical path, so medium and high tiers load faster than now |
+| D8 | When scenery loads | After the game is interactive, behind the setup screen. The critical path keeps only what it loads today. The Race button waits for it, as it already waits for the opponents' cars ("Getting ready…"), so the fly-over never shows a bare track. On medium and high, the light-probe bake waits for the scenery (the hemisphere light covers until then) | The spec's load time. The bake also leaves the critical path, so medium and high tiers load faster than now |
 | D9 | Racing Kit props | Converted at build time to a generated palette texture, so they shade and batch like the other kits. They're used only in the paddock (grandstands, pit garages, banner towers, gantries). Dropped if screenshots show they clash | It's the only kit with racetrack buildings, but its 2018 flat-colour style is older |
 | D10 | Car mass | From model volume (length × width × height), yellow truck = 1. Hand overrides: the tractors and the loader are heavier, the Formula lighter. Range ~0.3–1.4. It also replaces footprint area in car-to-car contact | Volume already orders the cars as a player expects: karts, then the racers, sports cars, the trucks and vans, and the big municipal trucks heaviest. At mass 1 (the default car), handling stays exactly as today |
 | D11 | Top speed (your question) | **Keep it the same for every car** | Top speed is the one stat a player reads at a glance, on the first straight beside another car. Different top speeds would make "the best car" obvious. Acceleration and momentum are felt, but they're hard to rank, and how much each matters changes with the track and the traffic |
-| D12 | "Knocked over" | Literally tipped: a hard side hit, scaled by the mass ratio, rolls the car onto its side or roof. This is a visual roll; the physics sphere is unchanged. The car either lands back on its wheels or the wand rights it. Heavy cars almost never tip, and light ones do from a heavy car's hit | It's the most fun reading of the prompt, and it reuses the wand. If you meant "knocked aside or spun", say so and I'll scale the existing shove and yaw kick by mass instead |
+| D12 | "Knocked over" | A hit knocks a car aside, spins it, or sends it flying. A car sent flying may land on its wheels, its side or its roof. Which of these happens comes from the hit itself: the relative speed of the two cars, their relative mass, and where the hit lands, not from a dice roll. Phase 6.3 has the details | As you described. The same crash always plays out the same way, so players can learn it: a heavy car T-boning a kart at speed launches it, while two cars of equal weight rubbing doors just shove |
 | D13 | How NPC skill shows | Every NPC goes flat out on straights. Skill shows in corners: braking point, line, corner speed, mistakes. `pace` stops capping top speed | A slow NPC should lose time where a slow human does, not by crawling down the straight |
 | D14 | Field spread | From 1.0–1.18 × your best lap to about 0.95–1.12 ×. It's also skill-aware: +3% for a novice-level best lap, −3% for an expert one (next_1 balance finding 1) | You found the field too slow. Without the skill-aware part, a faster field would be harder still on novices, who already finish 4th–5th |
-| D15 | Walls | Stay frictionless (next_0 balance finding 2 unchanged). The NPCs learn to use them the way players do | Changing wall friction changes the handling you've been driving. Say if you want the wall-scrape penalty instead; NPC pace re-aims itself either way |
+| D15 | Walls | Stay frictionless. Kerb drag (feature 8) is what stops riding the wall from being the free racing line, because you can't touch a wall without wheels on the kerb. That settles next_0 balance finding 2 | Keeps one cause for one effect: the kerb slows you, and the wall only keeps you in |
+| D16 | Fly-over | About 5 s, before every race started from the setup screen. Any key, tap or gamepad button skips it. "Race again" skips it, since you've just seen the track. It's skipped automatically with `prefers-reduced-motion`. Not in time trial | "Short". Restarts stay quick |
+| D17 | Badges | 3 or fewer cars in the race: only the winner gets one. 4 or more: gold, silver and bronze for 1st–3rd. Your best medal per track is remembered and shown in the track picker | Your rule. A remembered medal gives the badge a reason to exist after the results close; it's the "or something" |
+| D18 | Podium display | A small separate 3D scene replaces the race view behind the results panel. The winner turns slowly on a round table under a spotlight, with confetti. With three winners, 2nd and 3rd stand on lower round steps either side | It works the same on every track, including custom ones, and needs no room in the scenery. It's cheap to draw |
+| D19 | Kerb drag | Per wheel on the kerb: the rumble strip drags lightly, the red-and-white kerb about twice as much. Heavy cars ride over kerbs a little better. It applies on every track, the four flat ones included | "Driving into and along the kerb slows you down". Counting wheels makes clipping an apex cost less than riding along the kerb |
+| D20 | Saved best laps | Restart with this version (a new storage key; the old records stay in storage, unused) | Records set by riding the wall for free can't be matched once kerbs drag. The field is aimed at your best lap, so an unreachable record would make every race on that track unwinnable |
 
 ## Phase 0: import the new kits (`npm run models`)
 
@@ -151,7 +169,7 @@ Answers `ai/prompt_2.md`. Nothing here is implemented yet.
    - **ghost** (1.5 s): no car-to-car contact, drawn translucent, as now.
    - Throughout, the race clock runs and the other cars keep driving. For the player, the camera follows the carried car, so the view sweeps back to the track.
 3. **The wand** is generated geometry: a stick with a five-point star, in the colormap's purple and yellow. A trail of star sparkles uses the smoke sprite tinted gold, and there's a short synthesized chime (`js/Audio.js`). New module: `js/Wand.js`, rendering only. The state lives in `Race.js`, so the Node sim runs it too.
-4. **Everything uses it:** falls, off-track cars, stuck or wrong-way NPCs (`driver.wantsRespawn`), tipped cars (Phase 6) and the R key / "Reset car".
+4. **Everything uses it:** falls, off-track cars, stuck or wrong-way NPCs (`driver.wantsRespawn`), cars left on their side or roof after a hit (Phase 6) and the R key / "Reset car".
 5. **Checks:**
    - A new `cliff` playtest scenario drives off Bathurst's cliff on purpose. The wand must fire within 1.5 s and the car must be back on the road facing forward. NPCs keep lapping meanwhile, the lap counter isn't fooled, and there are no NaNs.
    - The soak test counts wand trips per car.
@@ -272,14 +290,35 @@ Answers `ai/prompt_2.md`. Nothing here is implemented yet.
    - **Acceleration:** the throttle rate 1.5 becomes 1.5·m^−0.4. A kart gets ~1.7×, the garbage truck ~0.9×.
    - **Momentum when coasting:** the lift-off rate becomes 1.5·m^−0.6, so heavy cars roll on further.
    - **Braking:** 8·m^−0.3.
-   - Speed lost to wall hits, gravel drag and car contacts scales with 1/m.
+   - Speed lost to wall hits, gravel drag, kerbs (Phase 7) and car contacts scales with 1/m.
    - Body pitch and roll animation scales with m^−0.5, so light cars visibly bob and heavy ones look planted.
    - **Top speed:** `MAX_SPEED` for every car (D11).
-3. **Knock-overs** (D12), in `js/CarCollisions.js`:
-   - A contact's sideways velocity change, `j / m` relative to the car's heading, above a threshold tips the car. The default threshold is ~3.5 m/s and it's exposed in `?tune`.
-   - Δv is the impulse over the car's own mass, so a heavy car tips a light one easily, and a light car barely moves a heavy one.
-   - **Tipped:** no input. The model rolls about its long axis while the sphere slides with the hit. A small tip lands back on its wheels after a roll (~0.6 s lost). A big one leaves it on its side or roof, and the wand rights it on the spot (~1.5 s).
-   - Rolls are purely visual, so the physics can't jam.
+3. **Hits: knocked aside, spun, or sent flying** (D12), in `js/CarCollisions.js`.
+   - **What a car feels.** The contact impulse already comes from the closing speed and both masses. Each car's velocity change is `Δv = (1 + e) · v_closing · m_other / (m_self + m_other)`, so it depends only on the relative speed and the relative mass. Each car's Δv is split into the part along its own heading and the part across it.
+   - **Along its heading** (a nose or tail hit): Δv comes off its drive speed, as today. These hits never launch a car.
+   - **Across its heading**, three outcomes by size. The starting thresholds are tunable in `?tune`.
+     - **Under ~2 m/s: knocked aside.** Today's shove, plus a body wobble.
+     - **2–5 m/s: spun.** The yaw kick grows with Δv and with how far off-centre the hit is. Steering fades out for ~0.3 s, so the driver has to catch it.
+     - **Over ~5 m/s: sent flying.** The physics sphere gets real upward velocity, a capped fraction of the sideways Δv. It really leaves the ground: it can clear a wall and land on the road, on terrain, or off the track, which brings the wand. The model tumbles with spin from the hit: roll from the sideways part, plus pitch if the hit was near the nose or tail.
+   - **Landing** depends on how the car is turned when it touches down. That follows from the tumble rate and the airtime, both set by the hit.
+     - **Within ~50° of upright:** it lands on its wheels, bounces and carries on. The existing upright pull takes over.
+     - **Beyond that:** it lands on its side or roof and slides to a stop, and the wand rights it on the spot (~1.5 s).
+     - No input while flying or on its side.
+   - **Examples** (restitution 0.35, today's value):
+
+     | Hit | Struck car's sideways Δv | Outcome | The other car |
+     |---|---|---|---|
+     | Garbage truck (1.36) T-bones a kart (0.28) at 8 m/s | ~9 m/s | flying, likely onto its roof | ~1.8 m/s along its heading: a small slowdown |
+     | Kart T-bones a garbage truck at 8 m/s | ~1.8 m/s | knocked aside | the kart bounces off, nose first |
+     | Two yellow trucks, side hit at 8 m/s | ~5.4 m/s | a short hop, usually back on its wheels | slows |
+     | Two cars of similar weight rubbing doors at 2 m/s | ~1.4 m/s | a shove | a shove |
+     | A garbage truck leaning on a kart at 2 m/s | ~2.2 m/s | the kart spins | barely moves |
+
+   - **On flat tracks**, a car is airborne when the sphere is above the ground plane, so no ray is needed there.
+   - **Tuning target** in the sim, races with 8 NPCs:
+     - about 1–3 launches per race, mostly light cars
+     - a light car lands on its roof or side in about half its launches, a heavy one rarely
+     - no car stuck in a wall or another car afterwards
 4. **Not obvious which car wins.** These are measured with the sim, with the same AI driver in every car:
    - In time trial, the spread across weight classes stays within 1.5% of lap time on every track, and the fastest class isn't the same on every track.
    - Light cars win on twisty tracks (Monaco, Classic). Heavy cars hold up better in traffic, on gravel, through contact and on long flat-out tracks.
@@ -290,13 +329,41 @@ Answers `ai/prompt_2.md`. Nothing here is implemented yet.
    - No speed or acceleration stats are shown, so the picker doesn't rank the cars.
 6. **NPC calibration:** the difficulty controller already corrects lap by lap. Its starting skill also gets a per-class lap factor from the sim, so a kart NPC doesn't start a race badly mis-aimed.
 
-## Phase 7: NPC driving (Feature 4)
+## Phase 7: kerbs slow you down (Feature 8)
 
-Physics changes (Phases 1, 6) come first, because NPC speed is calibrated against them.
+1. **The bands**, from the measured pieces:
+   - the yellow rumble strip, 2.63–3.0 m from the lane centre
+   - the red-and-white kerb, 3.0–3.38 m
+
+   They're the same on every track, on both sides of straights, the finish piece and corners. On height tracks, the bent pieces keep them where they are.
+2. **Per step, per car:**
+   - The four wheel positions come from the car's footprint and its centerline projection. That's a few multiplies per car; no new physics shapes.
+   - Each wheel on the strip or the kerb adds drag to `linearSpeed` (D19). The kerb drags about twice as hard as the strip, scaled by m^−0.5.
+   - One wheel clipping an apex costs little. Two wheels along the kerb cost a lot.
+3. **Riding the wall** now always means two wheels on the kerb, so it costs time. Walls stay frictionless (D15).
+4. **Feedback:**
+   - a synthesized rumble whose rate follows speed
+   - a small body judder
+   - gamepad rumble where the browser supports it
+   - short `navigator.vibrate` pulses on Android phones (iOS has no vibration API)
+5. **Gravel cells** have no kerb drag (gravel has its own), except along the low inside kerb.
+6. **Recalibration** for every track:
+   - Par and the NPC `ai` tables are redone.
+   - The playtest expert bot never brakes (`cornerSpeed: 99`), so it gets a braking preset and stays a fair stand-in for a fast human.
+   - Saved best laps restart (D20).
+7. **Targets** (bots, every track):
+   - riding the wall flat out is ≥ 5% slower than a clean line with braking
+   - the average bot's best lap moves by ≤ 3%
+   - Drag strength is one constant.
+
+## Phase 8: NPC driving (Feature 4)
+
+Physics changes (Phases 1, 6 and 7) come first, because NPC speed is calibrated against them.
 
 1. **Racing line.** Each track's centerline offsets are smoothed within ±(road half-width − margin), clipping apexes and using the full width (iterative minimum-curvature smoothing). It's computed once when the track is built, in the browser and in Node. Better drivers follow more of it. Traffic avoidance still offsets from it.
 2. **Speed profile along that line:**
-   - Corner speed is `sqrt( a_lat · R )`. A single `a_lat` factor is fitted by the sim, and it's allowed to lean on walls wherever that's faster, as players do.
+   - Corner speed is `sqrt( a_lat · R )`. A single `a_lat` factor is fitted by the sim.
+   - The line keeps all four wheels off the kerbs, except where the fit finds that clipping an apex with one wheel is faster. Low-skill drivers wander onto kerbs more.
    - A backward pass with the car's own braking rate gives the braking points.
    - A forward pass with its acceleration gives the expected speed.
    - Because they come from each car's own rates, light and heavy cars brake and accelerate where their own handling needs.
@@ -310,7 +377,7 @@ Physics changes (Phases 1, 6) come first, because NPC speed is calibrated agains
 4. **Traffic:**
    - pick a passing side earlier
    - lift only when closing fast on a car directly ahead
-   - aggressive drivers lean on you, which is where knock-overs come from
+   - aggressive drivers lean on you, which is where spins and launches come from. Heavy aggressive NPCs lean hardest
    - no slowing when merely near another car
 5. **In the air:** no steering correction until they land. After a wand trip they rejoin at full throttle.
 6. **`npm run sim -- --fit`**: fits `a_lat` per track for the lowest skill-1 lap. Then `--calibrate` refreshes the `ai` tables in `js/Tracks.js`.
@@ -319,7 +386,7 @@ Physics changes (Phases 1, 6) come first, because NPC speed is calibrated agains
    - NPCs reach ≥ 97% of top speed on every straight of 3+ cells.
    - Soak test: 9 cars × 20 laps × 6 tracks: no permanently stuck car, no NaN. Wand trips are reported per track; only Bathurst's cliff should cause them.
 
-## Phase 8: difficulty and balance
+## Phase 9: difficulty and balance
 
 1. The new spread and skill-aware offset (D14). Rubber band: NPCs behind you push up to +6%, ones ahead ease off up to −3%. It was ±4%.
 2. **First race on a track:** the re-aim discounts the standing start, so the first lap ×0.92 is treated as a flying lap.
@@ -330,21 +397,66 @@ Physics changes (Phases 1, 6) come first, because NPC speed is calibrated agains
    - The touch schemes are run too.
 4. Your own feel decides whether it's right. I'll hand over the numbers and recordings, and the spread constants are one line each in `js/Difficulty.js`.
 
-## Phase 9: performance, load time, docs
+## Phase 10: a fly-over before the race (Feature 6)
+
+1. **When** (D16): after Race on the setup screen, before 3-2-1.
+   - You and the NPCs sit on the grid. The simulation stays in its `grid` phase, so nothing in `Race.js` or the Node sim changes.
+   - It's a new camera mode in `js/Camera.js`, driven from `main.js`.
+2. **The path** (~5 s):
+   - A high overview of the whole track (0.8 s).
+   - A sweep along one lap on a smoothed spline through the centerline, heights included. The camera rides ~12–15 m up, behind a look point running ahead along the road.
+     - Speed is constant, about track length ÷ 3.5 s: ~31 m/s on Classic, ~78 m/s on Suzuka.
+     - The look direction is low-pass filtered, so corners don't whip the view.
+     - On Bathurst it passes over the cliff top; on Suzuka, over the bridge.
+   - A descent onto the chase camera behind your car (0.8 s), then the countdown.
+3. **On screen:** the track name, its "inspired by" line and the lap count, plus "Tap or press any key to skip".
+4. **Things to handle:**
+   - The overview shows the whole track at once, so:
+     - fog and the far plane are pushed out (`Camera.extraDistance`), and the shadow box fits the view as now
+     - it costs more per frame than racing, so the automatic quality step-down ignores fly-over frames and its monitor resets at GO
+   - The scenery is already in place, because Race waits for it (D8).
+   - Rotating the device mid-fly-over goes through the usual resize path.
+   - Skipping cuts straight to the chase camera.
+5. **Playtests:** the race-flow bots skip it with a key. One run lets it play out, and checks that:
+   - it ends exactly on the chase camera
+   - no quality step-down happened
+   - no page errors
+
+## Phase 11: badges and the podium (Feature 7)
+
+1. **Who gets a badge** (D17):
+   - 3 or fewer cars in the race: only 1st, a gold badge.
+   - 4 or more: gold, silver and bronze for 1st–3rd.
+   - Time trial has none.
+   - Badges are small generated medals: a coin with a ribbon and the place number, as inline SVG for the panel and a sprite in 3D.
+2. **Results panel:** a medal before each badge-winning row; the winner's row is highlighted. Your row stays highlighted as now.
+3. **The podium** (D18), in a new `js/Podium.js`:
+   - **The scene:** a small separate one, rendered instead of the race while the results are up.
+     - A round table (generated: a grey plinth with a gold rim, in the Starter Kit colormap) turns slowly with the winning car on it, under a spotlight, with a burst of confetti.
+     - With three badges, 2nd and 3rd stand on lower round steps either side.
+     - Each car on the podium has its badge floating above it.
+   - **Cars still racing:** the race keeps simulating behind, as now. A step fills when its car crosses the line, so if you finish 1st, the 2nd and 3rd steps fill in as they arrive.
+   - **Framing:** the podium sits in the part of the screen the panel leaves free: beside it on wide screens, above it on tall ones (the same split the setup screen uses).
+   - **Low tier:** a blob shadow and less confetti.
+   - "Race again" and "Change setup" go back to the race scene.
+4. **Remembered medals:** your best finish per track (`kerb.medals`) shows as a small medal beside that track in the picker. Only places that earned a badge count: 2nd in a 3-car race earns nothing.
+5. **Playtests:** races with 1, 2, 3, 4 and 8 opponents give the right badges. The podium renders in portrait and landscape, and fills in when the player finishes 1st ahead of the field.
+
+## Phase 12: performance, load time, docs
 
 - `npm run perf:load` on all four profiles: interactive ≤ 1 s on the average profile (0.44 s today), and critical-path bytes ≤ 0.7 MB.
 - Frame benchmark for each tier × 0 / 8 NPCs × all 6 tracks. Low tier on the HD 630 at 1080p must stay ≤ 13 ms (11–12 ms today).
 - Simulation step with mesh colliders, 8 NPCs, 4× CPU: p50 ≤ 2 ms, p95 ≤ 3.5 ms. Mesh contacts cost more than boxes; the slicing resolution is the knob.
 - Playtests, all passing:
-  - **New:** `cliff`, `crossing` (both passes counted, no snapping), `airtime` (time in the air per crest by bot skill), `occluder` (car visible under the bridge), `tip-over` (a scripted heavy-vs-light hit), and per-class lap times.
+  - **New:** `cliff`, `crossing` (both passes counted, no snapping), `airtime` (time in the air per crest by bot skill), `occluder` (car visible under the bridge), `hits` (scripted hits at several speeds and mass pairs: shove, spin, launch, land on wheels or roof), `kerbs` (lap cost of riding the wall), `flyover`, `podium`, and per-class lap times.
   - **Existing:** the 121 current checks still pass.
-- README: the two new tracks and what inspired them, the wand, weight classes, the kit credits (CC0, Kenney), and the new npm scripts.
+- README: the two new tracks and what inspired them, the wand, weight classes, kerbs, the fly-over and badges, the kit credits (CC0, Kenney), and the new npm scripts.
 - `ai/next_2.md`.
 
 ## Files
 
 - **New:**
-  - `js/Wand.js`, `js/Terrain.js`, `js/Scenery.js` (zones, landmarks, signage), `js/Occluders.js`, `js/Bend.js` (slice and bend pieces)
+  - `js/Wand.js`, `js/Terrain.js`, `js/Scenery.js` (zones, landmarks, signage), `js/Occluders.js`, `js/Bend.js` (slice and bend pieces), `js/Podium.js`, `js/Kerbs.js` (wheel-on-kerb test and drag)
   - `js/SceneryList.js` (generated)
   - `models/<kit>/` (compressed) and `models/src/<kit>/` (originals plus licences)
 - **Changed:**
@@ -352,17 +464,19 @@ Physics changes (Phases 1, 6) come first, because NPC speed is calibrated agains
   - `js/Tracks.js`: Bathurst, Suzuka, `heights` / `unsealed` / `scenery`, recalibrated `ai` tables
   - `js/Track.js`: bent pieces, bridges, generalised chunked instancing
   - `js/Physics.js`: mesh road and terrain colliders, sloped walls
-  - `js/Race.js`: off-track states, the wand, last good spot
-  - `js/Vehicle.js`: per-car handling, ground normal, air state, tip roll
-  - `js/CarCollisions.js`: mass from volume, knock-overs
-  - `js/AIDriver.js`, `js/Difficulty.js`: profile driving, new spread
-  - `js/Camera.js`: height smoothing
+  - `js/Race.js`: off-track states, the wand, last good spot, kerb drag per step
+  - `js/Vehicle.js`: per-car handling, ground normal, air state and tumble
+  - `js/CarCollisions.js`: mass from volume; shove / spin / launch by Δv
+  - `js/AIDriver.js`, `js/Difficulty.js`: profile driving, kerb-aware line, new spread
+  - `js/Camera.js`: height smoothing, fly-over mode
   - `js/SunShadow.js`, `js/DriftMarks.js`, `js/Particles.js`: heights, dust
-  - `js/Audio.js`: chime, gravel, landing
+  - `js/Audio.js`: chime, gravel, landing, kerb rumble
+  - `js/Controls.js`: gamepad rumble and phone vibration on kerbs
+  - `js/LapTimer.js`: new best-lap key (D20)
   - `js/Loader.js`, `js/Assets.js`: more kits
-  - `js/Shell.js`, `index.html`: weight label, editor link hidden on new tracks
-  - `js/main.js`: scenery after interactive, probes after scenery, wand and occluders
-  - `js/Tune.js`: tip threshold, handling exponents
+  - `js/Shell.js`, `index.html`: weight label, editor link hidden on new tracks, fly-over title card and skip, medals in the results and the track picker
+  - `js/main.js`: scenery after interactive, probes after scenery, wand, occluders, fly-over, podium
+  - `js/Tune.js`: hit thresholds, handling exponents, kerb drag
   - `scripts/models.mjs`: kits, gravel pieces, prefabs, palette conversion
   - `scripts/check-tracks.mjs`, `scripts/sim/race.mjs` (`--fit`, per class), `scripts/playtest/*`
   - `vite.config.js`: preload map
@@ -376,14 +490,17 @@ Physics changes (Phases 1, 6) come first, because NPC speed is calibrated agains
 3. Phase 3: Suzuka, the bridge and occluder fade.
 4. Phase 4: Bathurst.
 5. Phase 5: scenery for all six tracks (screenshots for you).
-6. Phase 6: mass handling and knock-overs (sim balance table).
-7. Phase 7: NPC driving (calibration tables).
-8. Phase 8: difficulty, on its own so it can be reviewed and reverted separately.
-9. Phase 9.
+6. Phase 6: mass handling and hits (sim balance table, hit recordings).
+7. Phase 7: kerbs (wall-riding cost per track).
+8. Phase 8: NPC driving (calibration tables).
+9. Phase 9: difficulty, on its own so it can be reviewed and reverted separately.
+10. Phases 10–11: fly-over, badges and podium. Both are presentation only, so they can move earlier if you'd like to see them first.
+11. Phase 12.
 
 ## What I can't verify here
 
-- Whether the jumps, the cliff and getting knocked over are fun, and whether each corner now looks recognisable. I'll hand over recordings and corner screenshots.
+- Whether the jumps, the cliff, the hits and the kerbs are fun, and whether each corner now looks recognisable. I'll hand over recordings and corner screenshots.
+- How kerb vibration feels: gamepad rumble and phone vibration only work on real hardware.
 - How the hills, extra scenery and mesh colliders run on a real entry-level phone. As before, everything here is the HD 630 in headless Chrome. The low tier's scenery thinning is the lever if a phone struggles.
 - Whether the faster field feels right to you. Your test drive is the reference I don't have, so the spread is the knob to adjust.
 
