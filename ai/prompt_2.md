@@ -13,7 +13,7 @@
 4. Improve AI's capability in driving
     - In my test drive, NPC cars are too slow in general
 5. Tune the acceleration and deceleration of each car based on their mass
-    - light cars: high acceleration, less momentum
-    - heavy cars: low acceleration, more momentum
+    - light cars: high acceleration, less momentum, get knocked over easily
+    - heavy cars: low acceleration, more momentum, can knock over other cars easily
     - should we keep top speed the same for now?
     - don't make it too obvious on which car gives you the best chance to win 
