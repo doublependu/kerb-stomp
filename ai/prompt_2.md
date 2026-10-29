@@ -17,3 +17,7 @@
     - heavy cars: low acceleration, more momentum, can knock over other cars easily
     - should we keep top speed the same for now?
     - don't make it too obvious on which car gives you the best chance to win 
+6. There should be a short fly-over of the whole track at the beginning of the race. 
+7. The winner, 1st, 2nd, 3rd places should get a badge or something
+    - if there are 3 or less cars playing then there's only 1 winner, otherwise 3. 
+    - highlight the winning car in a round table display
