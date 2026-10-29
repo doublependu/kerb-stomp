@@ -158,6 +158,8 @@ export class GameAudio {
 
 		} );
 
+		this.initSurface();
+
 		// Skid loop: sample player with a tone filter that opens as the
 		// drift intensifies
 		const skid = this.createSampleSource( this.reverbSend );
@@ -222,6 +224,51 @@ export class GameAudio {
 			}
 
 		} );
+
+	}
+
+	// The player's tyres on the kerbs (a buzzing rumble that rises with
+	// speed) and on gravel (filtered noise, a crunch). Silent until set.
+	initSurface() {
+
+		const ctx = this.listener.context;
+
+		this.rumble = ctx.createOscillator();
+		this.rumble.type = 'sawtooth';
+		this.rumble.frequency.value = 40;
+		const rumbleTone = ctx.createBiquadFilter();
+		rumbleTone.type = 'lowpass';
+		rumbleTone.frequency.value = 260;
+		this.rumbleGain = ctx.createGain();
+		this.rumbleGain.gain.value = 0;
+		this.rumble.connect( rumbleTone ).connect( this.rumbleGain ).connect( this.listener.getInput() );
+
+		const noise = ctx.createBuffer( 1, ctx.sampleRate, ctx.sampleRate );
+		const data = noise.getChannelData( 0 );
+		for ( let i = 0; i < data.length; i ++ ) data[ i ] = Math.random() * 2 - 1;
+		this.crunch = ctx.createBufferSource();
+		this.crunch.buffer = noise;
+		this.crunch.loop = true;
+		const crunchTone = ctx.createBiquadFilter();
+		crunchTone.type = 'bandpass';
+		crunchTone.frequency.value = 1600;
+		crunchTone.Q.value = 0.8;
+		this.crunchGain = ctx.createGain();
+		this.crunchGain.gain.value = 0;
+		this.crunch.connect( crunchTone ).connect( this.crunchGain ).connect( this.listener.getInput() );
+
+	}
+
+	// kerb: 0–1 of the car on the kerbs; gravel: on gravel; speed: m/s
+	setSurface( kerb, gravel, speed ) {
+
+		if ( ! this.rumbleGain || ! this.unlocked ) return;
+
+		const t = this.listener.context.currentTime;
+		const pace = Math.min( 1, speed / 12 );
+		this.rumble.frequency.setTargetAtTime( 28 + speed * 4, t, 0.05 );
+		this.rumbleGain.gain.setTargetAtTime( this.paused ? 0 : kerb * pace * 0.22, t, 0.03 );
+		this.crunchGain.gain.setTargetAtTime( this.paused || ! gravel ? 0 : pace * 0.12, t, 0.05 );
 
 	}
 
@@ -360,9 +407,46 @@ export class GameAudio {
 
 	}
 
+	// The magic wand: a rising sparkle of sine bells. volume: 1 for the
+	// player's car, less for others further away.
+	chime( volume = 1 ) {
+
+		if ( ! this.unlocked || this.paused || volume < 0.03 ) return;
+
+		const ctx = this.listener.context;
+		const t0 = ctx.currentTime;
+
+		[ 1319, 1568, 1976, 2637 ].forEach( ( frequency, i ) => {
+
+			const t = t0 + i * 0.07;
+			const osc = ctx.createOscillator();
+			const gain = ctx.createGain();
+
+			osc.type = 'sine';
+			osc.frequency.value = frequency;
+			gain.gain.setValueAtTime( 0.0001, t );
+			gain.gain.exponentialRampToValueAtTime( 0.06 * volume, t + 0.01 );
+			gain.gain.exponentialRampToValueAtTime( 0.0001, t + 0.6 );
+
+			osc.connect( gain ).connect( this.listener.getInput() );
+			osc.start( t );
+			osc.stop( t + 0.65 );
+
+		} );
+
+	}
+
 	startSounds() {
 
 		if ( this.skidSound.buffer && ! this.skidSound.isPlaying ) this.skidSound.play();
+
+		if ( this.rumble && ! this.surfaceStarted ) {
+
+			this.surfaceStarted = true;
+			this.rumble.start();
+			this.crunch.start();
+
+		}
 
 	}
 

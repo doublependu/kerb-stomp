@@ -27,6 +27,9 @@ export class SunShadow {
 		this.texelX = 0;
 		this.texelY = 0;
 
+		// How far ground can rise above or fall below the look point (hills)
+		this.rise = 0;
+
 	}
 
 	// footprint: ground points around the look point (see Camera.updateFootprint)
@@ -36,11 +39,15 @@ export class SunShadow {
 
 		for ( const p of footprint ) {
 
-			const x = p.dot( this.right ), y = p.dot( this.up );
-			minX = Math.min( minX, x );
-			maxX = Math.max( maxX, x );
-			minY = Math.min( minY, y );
-			maxY = Math.max( maxY, y );
+			for ( const dy of this.rise ? [ - this.rise, 0, this.rise ] : [ 0 ] ) {
+
+				const x = p.dot( this.right ) + dy * this.right.y, y = p.dot( this.up ) + dy * this.up.y;
+				minX = Math.min( minX, x );
+				maxX = Math.max( maxX, x );
+				minY = Math.min( minY, y );
+				maxY = Math.max( maxY, y );
+
+			}
 
 		}
 

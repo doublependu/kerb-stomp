@@ -3,7 +3,7 @@
 
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
-import { centerline, encodeLoop, encodeCells } from './track.mjs';
+import { Polyline, encodeLoop, encodeCells } from './track.mjs';
 import { KeyboardDriver, TouchDriver, PadsDriver, drive } from './driver.mjs';
 
 const DESKTOP = { viewport: { width: 1920, height: 1080 } };
@@ -80,10 +80,12 @@ async function open( env, contextOptions, { query = '', video = env.record, labe
 
 }
 
+// The game's own centerline (a track that crosses itself can't be walked
+// from its cells by grid position)
 async function trackLine( page ) {
 
-	const { cells, spawn } = await page.evaluate( () => ( { cells: window.__kerb.cells, spawn: window.__kerb.spawn } ) );
-	return centerline( cells, spawn.angle );
+	const line = await page.evaluate( () => window.__kerb.line );
+	return new Polyline( line.points, line.closed );
 
 }
 
@@ -150,7 +152,7 @@ export const SCENARIOS = {
 		const checks = [];
 		const runs = [];
 
-		for ( const id of [ 'indianapolis', 'monza', 'monaco' ] ) {
+		for ( const id of [ 'indianapolis', 'monza', 'monaco', 'suzuka', 'bathurst' ] ) {
 
 			const result = await driveRuns( env, `track-${ id }`, LAPTOP, { input: 'keyboard', skills: [ 'average' ], laps: 2, query: '&track=' + id } );
 			checks.push( ...result.checks );
@@ -262,10 +264,15 @@ export const SCENARIOS = {
 		check( checks, 'setup screen lines up the field', s.screen === 'ready' && s.mode === 'race' && s.cars === 4, `${ s.screen } ${ s.mode } ${ s.cars } cars` );
 		await env.screenshot( page, 'race-flow-setup' );
 
+		// W starts the race; the fly-over plays first, and a fresh key skips it
 		await page.keyboard.down( 'KeyW' );
-		await page.waitForTimeout( 1500 );
+		await page.waitForTimeout( 1000 );
 		s = await state();
-		check( checks, 'countdown holds the cars', s.phase === 'countdown' && s.speed < 0.2, `${ s.phase }, speed ${ s.speed.toFixed( 2 ) }` );
+		check( checks, 'the fly-over plays before the race', s.flyover && s.phase === 'grid' && s.speed < 0.2, `flyover ${ s.flyover }, ${ s.phase }` );
+		await page.keyboard.press( 'Space' );
+		await page.waitForTimeout( 500 );
+		s = await state();
+		check( checks, 'a key skips the fly-over; the countdown holds the cars', ! s.flyover && s.phase === 'countdown' && s.speed < 0.2, `flyover ${ s.flyover }, ${ s.phase }, speed ${ s.speed.toFixed( 2 ) }` );
 		await page.waitForFunction( () => window.__kerb.state().phase === 'racing', null, { timeout: 5000 } );
 		await page.waitForTimeout( 1200 );
 		s = await state();
@@ -323,6 +330,166 @@ export const SCENARIOS = {
 
 	},
 
+	// The fly-over runs its course and hands over to the race, with no
+	// quality step-down from its wide views
+	'flyover': async ( env ) => {
+
+		const checks = [];
+		const { page, errors, close } = await open( env, LAPTOP, { query: '&track=suzuka', label: 'flyover', prefs: { npcs: 3 } } );
+		await page.waitForFunction( () => document.getElementById( 'start-btn' ).textContent !== 'Getting ready…', null, { timeout: 30000 } );
+		const before = await page.evaluate( () => window.__kerb.state().tier );
+
+		await page.click( '#start-btn' );
+		await page.waitForTimeout( 600 );
+		let s = await page.evaluate( () => window.__kerb.state() );
+		check( checks, 'flyover: starts on Race', s.flyover && s.phase === 'grid', `flyover ${ s.flyover }, ${ s.phase }` );
+		await env.screenshot( page, 'flyover-overview' );
+
+		await page.waitForFunction( () => window.__kerb.state().phase === 'countdown', null, { timeout: 10000 } );
+		s = await page.evaluate( () => {
+
+			const k = window.__kerb;
+			const p = k.race.player.vehicle.container.position;
+			const ndc = k.project( p.x, p.y + 0.5, p.z );
+			return { ...k.state(), ndc, far: k.three.camera.far };
+
+		} );
+		check( checks, 'flyover: lands on the chase camera behind the player', Math.abs( s.ndc[ 0 ] ) < 0.3 && Math.abs( s.ndc[ 1 ] ) < 0.4 && s.far < 200, `player at ${ s.ndc.map( ( v ) => v.toFixed( 2 ) ) } on screen, far ${ s.far.toFixed( 0 ) }` );
+		check( checks, 'flyover: no quality step-down', s.tier === before, `${ before } → ${ s.tier }` );
+		check( checks, 'flyover: no page errors', errors.length === 0, errors.slice( 0, 2 ).join( ' | ' ) );
+		await close();
+
+		return { checks, runs: [] };
+
+	},
+
+	// Off Bathurst's unsealed cliff top: the wand brings the car back to the
+	// road while the race clock runs on
+	'cliff': async ( env ) => {
+
+		const checks = [];
+		const { page, errors, close } = await open( env, LAPTOP, { query: '&track=bathurst', label: 'cliff' } );
+
+		await page.keyboard.press( 'Enter' );
+		await page.waitForTimeout( 500 );
+
+		// On the gravel past Skyline, pointed at the drop
+		const start = await page.evaluate( () => {
+
+			const r = window.__kerb.race;
+			const line = r.line;
+			const s = r.shape.cellStart[ 14 ] + 3;
+			const p = line.pointAt( s ), dir = line.directionAt( s );
+			const out = r.shape.outsideAt( s ); // the side the drop is (+ lateral is right)
+			const angle = dir - out * Math.PI * 0.4;
+			r.place( r.player, [ p[ 0 ], 0.5 + line.heightAt( s ), p[ 1 ] ], angle );
+			r.player.counter.running = true;
+			return { y: r.player.vehicle.spherePos.y, resets: r.player.vehicle.resets };
+
+		} );
+
+		await page.keyboard.down( 'KeyW' );
+		let fell = false, carried = false, back = false;
+
+		for ( let t = 0; t < 60 && ! back; t ++ ) {
+
+			await page.waitForTimeout( 100 );
+			const s = await page.evaluate( () => {
+
+				const c = window.__kerb.race.player;
+				return { y: c.vehicle.spherePos.y, carry: Boolean( c.carry ), road: c.onRoad, lateral: c.proj.lateral, time: window.__kerb.race.time };
+
+			} );
+
+			if ( s.y < start.y - 2 ) fell = true;
+			if ( s.carry ) { carried = true; await page.keyboard.up( 'KeyW' ); }
+			if ( carried && ! s.carry && s.road && Math.abs( s.lateral ) < 3.4 ) back = true;
+			if ( t === 8 ) await env.screenshot( page, 'cliff-falling' );
+
+		}
+
+		await page.keyboard.up( 'KeyW' );
+		check( checks, 'cliff: the car goes over the edge', fell );
+		check( checks, 'cliff: the wand fetches it', carried );
+		check( checks, 'cliff: and puts it back on the road', back );
+		check( checks, 'cliff: no page errors', errors.length === 0, errors.slice( 0, 2 ).join( ' | ' ) );
+		await close();
+
+		return { checks, runs: [] };
+
+	},
+
+	// Badges: one with 3 or fewer cars, three with more; the podium shows
+	'podium': async ( env ) => {
+
+		const checks = [];
+
+		for ( const [ npcs, medals ] of [ [ 2, 1 ], [ 4, 3 ] ] ) {
+
+			const { page, errors, close } = await open( env, LAPTOP, { query: '&noflyover', label: `podium-${ npcs + 1 }-cars`, prefs: { npcs } } );
+			await page.waitForFunction( () => document.getElementById( 'start-btn' ).textContent !== 'Getting ready…', null, { timeout: 30000 } );
+			await page.click( '#start-btn' );
+			await page.waitForFunction( () => window.__kerb.state().phase === 'racing', null, { timeout: 10000 } );
+
+			// The player's car on autopilot, one lap
+			await page.evaluate( () => {
+
+				const r = window.__kerb.race;
+				r.laps = 1;
+				const Driver = r.cars.find( ( c ) => c.driver ).driver.constructor;
+				r.player.driver = new Driver( r.line, { skill: 1, seed: 5 } );
+				r.player.driver.racing = r.racing;
+
+			} );
+
+			await page.waitForFunction( () => document.body.dataset.state === 'finished', null, { timeout: 60000 } );
+			await page.waitForFunction( () => window.__kerb.race.cars.every( ( c ) => c.finished ) || window.__kerb.race.phase === 'done', null, { timeout: 30000 } ).catch( () => {} );
+			await page.waitForTimeout( 1200 );
+
+			const s = await page.evaluate( () => ( { medals: document.querySelectorAll( '#results .medal' ).length, podium: window.__kerb.podium.active, picker: localStorage.getItem( 'kerb.medals' ) } ) );
+			check( checks, `podium, ${ npcs + 1 } cars: ${ medals } badge${ medals > 1 ? 's' : '' }`, s.medals === medals, `${ s.medals } medals` );
+			check( checks, `podium, ${ npcs + 1 } cars: the podium shows`, s.podium );
+			await env.screenshot( page, `podium-${ npcs + 1 }-cars` );
+			check( checks, `podium, ${ npcs + 1 } cars: no page errors`, errors.length === 0, errors.slice( 0, 2 ).join( ' | ' ) );
+			await close();
+
+		}
+
+		return { checks, runs: [] };
+
+	},
+
+	// What the kerbs cost: the expert bot (which never brakes, so it slides
+	// wide onto them) with the kerbs dragging and without
+	'kerbs': async ( env ) => {
+
+		const checks = [];
+		const runs = [];
+		const laps = {};
+
+		for ( const kerb of [ 0, null ] ) {
+
+			const label = `kerbs-${ kerb === 0 ? 'off' : 'on' }`;
+			const { page, errors, close } = await open( env, LAPTOP, { label } );
+			if ( kerb === 0 ) await page.evaluate( () => window.__kerb.surface.kerb = 0 );
+			const line = await trackLine( page );
+			const run = await drive( page, new KeyboardDriver( page, line, { skill: 'expert', seed: env.seed } ), { laps: 3, timeout: 120 } );
+			run.label = label;
+			delete run.final;
+			runs.push( run );
+			laps[ label ] = Math.min( ...run.lapTimes );
+			check( checks, `${ label }: no page errors`, errors.length === 0, errors.slice( 0, 2 ).join( ' | ' ) );
+			await close();
+
+		}
+
+		const cost = laps[ 'kerbs-on' ] / laps[ 'kerbs-off' ] - 1;
+		check( checks, `kerbs: cost the wall-sliding expert ${ ( cost * 100 ).toFixed( 1 ) }% a lap`, cost > 0.02, `${ laps[ 'kerbs-off' ].toFixed( 2 ) } → ${ laps[ 'kerbs-on' ].toFixed( 2 ) } s` );
+
+		return { checks, runs };
+
+	},
+
 	'custom-tracks': async ( env ) => {
 
 		const checks = [];
@@ -343,6 +510,9 @@ export const SCENARIOS = {
 		await page.keyboard.down( 'KeyW' );
 		await page.waitForFunction( () => window.__kerb.state().resets > 0, null, { timeout: 30000, polling: 50 } ).catch( () => {} );
 		await page.keyboard.up( 'KeyW' );
+
+		// The wand flies it back: measure once it's down
+		await page.waitForFunction( () => ! window.__kerb.state().carried, null, { timeout: 5000, polling: 50 } ).catch( () => {} );
 		const after = await page.evaluate( () => window.__kerb.state() );
 		const distance = Math.hypot( after.x - spawn.position[ 0 ], after.z - spawn.position[ 2 ] );
 

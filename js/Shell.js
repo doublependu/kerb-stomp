@@ -8,7 +8,8 @@
 import { CARS } from './CarList.js';
 import { TRACKS } from './Tracks.js';
 import { thumbStyle } from './CarThumbs.js';
-import { MAX_NPCS } from './Settings.js';
+import { MAX_NPCS, loadMedals } from './Settings.js';
+import { medalSVG, badgeCount } from './Podium.js';
 import { formatTime } from './LapTimer.js';
 import { ordinal } from './Hud.js';
 
@@ -17,11 +18,12 @@ const VERSION = import.meta.env.VITE_APP_VERSION;
 
 const QUALITY_LABELS = { auto: 'Auto', low: 'Low', medium: 'Medium', high: 'High' };
 
-// Size class from footprint area (it sets collision mass, CarCollisions.js)
-export function sizeLabel( car ) {
+// Weight class (CarList.js mass: handling and who shoves whom), with pips.
+// No speed stats: every car has the same top speed.
+export function weightLabel( car ) {
 
-	const area = car.length * car.width;
-	return area < 0.6 ? 'Small' : area < 1.05 ? 'Medium' : 'Large';
+	const mass = car.mass ?? 1;
+	return mass < 0.6 ? 'Light ●○○' : mass < 1.1 ? 'Medium ●●○' : 'Heavy ●●●';
 
 }
 
@@ -191,10 +193,13 @@ export class Shell {
 		const tracks = document.getElementById( 'track-picker' );
 		const list = track.custom ? [ ...TRACKS, track ] : TRACKS;
 
+		const medals = loadMedals();
+
 		for ( const t of list ) {
 
 			const button = document.createElement( 'button' );
 			button.textContent = t.name;
+			if ( medals[ t.id ] ) button.insertAdjacentHTML( 'beforeend', ' ' + medalSVG( medals[ t.id ], 15 ) );
 			button.title = t.inspiredBy ? 'Inspired by ' + t.inspiredBy : '';
 			button.classList.toggle( 'active', t.id === track.id );
 			button.setAttribute( 'aria-pressed', t.id === track.id );
@@ -222,7 +227,7 @@ export class Shell {
 			const button = document.createElement( 'button' );
 			button.className = 'car-tile';
 			button.dataset.car = car.id;
-			button.innerHTML = `<span class="thumb" style="${ thumbStyle( i, 76 ) }"></span>${ car.name }<small>${ sizeLabel( car ) }</small>`;
+			button.innerHTML = `<span class="thumb" style="${ thumbStyle( i, 76 ) }"></span>${ car.name }<small>${ weightLabel( car ) }</small>`;
 			button.addEventListener( 'click', () => {
 
 				this.handlers.onCar( car.id );
@@ -260,7 +265,7 @@ export class Shell {
 		const button = document.getElementById( 'car-btn' );
 		button.querySelector( '.thumb' ).setAttribute( 'style', thumbStyle( index, 72 ) );
 		button.querySelector( '.car-name' ).textContent = car.name;
-		button.querySelector( '.car-size' ).textContent = sizeLabel( car ) + ' · ' + ( car.kit === 'starter' ? 'Starter Kit' : 'Car Kit' );
+		button.querySelector( '.car-size' ).textContent = weightLabel( car ) + ' · ' + ( car.kit === 'starter' ? 'Starter Kit' : 'Car Kit' );
 
 		for ( const tile of this.el.querySelectorAll( '.car-tile' ) ) tile.classList.toggle( 'active', tile.dataset.car === id );
 
@@ -375,6 +380,7 @@ export class Shell {
 		this.el.querySelector( '.result-title' ).textContent = position === 1 ? 'You won!' : `You finished ${ ordinal( position ) }`;
 
 		const winner = standings[ 0 ];
+		const badges = badgeCount( standings.length );
 		const rows = standings.map( ( car, i ) => {
 
 			let time;
@@ -383,7 +389,8 @@ export class Shell {
 			else time = race.phase === 'done' ? 'DNF' : 'racing…';
 
 			const best = car.counter.bestLap !== null ? `<small>best ${ formatTime( car.counter.bestLap ) }</small>` : '';
-			return `<li class="${ car === player ? 'you' : '' }"><span class="pos">${ i + 1 }</span><span>${ car === player ? 'You' : car.name }${ best }</span><span class="time">${ time }</span></li>`;
+			const pos = i < badges && car.finished ? medalSVG( i + 1 ) : i + 1;
+			return `<li class="${ car === player ? 'you' : '' }${ i === 0 && car.finished ? ' winner' : '' }"><span class="pos">${ pos }</span><span>${ car === player ? 'You' : car.name }${ best }</span><span class="time">${ time }</span></li>`;
 
 		} );
 

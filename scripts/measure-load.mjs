@@ -5,6 +5,7 @@
 //   npm run perf:load                      # serves the existing dist/ via `wrangler dev`
 //   npm run perf:load -- --url https://…   # measure a deployed site
 //   npm run perf:load -- --runs 5
+//   npm run perf:load -- --query '?track=bathurst'
 
 import { chromium } from 'playwright';
 import { launchOptions, startServer } from './playtest/browser.mjs';
@@ -61,7 +62,7 @@ async function measure( browser, profile ) {
 	const errors = [];
 	page.on( 'pageerror', ( e ) => errors.push( e.message ) );
 
-	await page.goto( url, { waitUntil: 'commit' } );
+	await page.goto( url + arg( 'query', '' ), { waitUntil: 'commit' } );
 	await page.waitForFunction( () => performance.getEntriesByName( 'kerb:interactive' ).length > 0 || document.body.dataset.state === 'error', null, { timeout: 30000, polling: 50 } );
 
 	const result = await page.evaluate( () => {

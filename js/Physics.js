@@ -1,6 +1,174 @@
 import * as THREE from 'three';
-import { rigidBody, box, sphere, MotionType, MotionQuality } from 'crashcat';
+import { rigidBody, box, sphere, triangleMesh, MotionType, MotionQuality } from 'crashcat';
 import { TRACK_CELLS, CELL_RAW, ORIENT_DEG, GRID_SCALE } from './Track.js';
+import { GROUND_Y, ROAD_Y, WALL_CENTER } from './TrackShape.js';
+
+const WALL_HALF_THICK = 0.1875;
+const GRAVEL_FRICTION = 2.0;
+const WALL_HALF_HEIGHT = 1.125;
+
+const _a = new THREE.Vector3();
+const _b = new THREE.Vector3();
+const _along = new THREE.Vector3();
+const _upish = new THREE.Vector3();
+const _across = new THREE.Vector3();
+const _basis = new THREE.Matrix4();
+const _q = new THREE.Quaternion();
+
+function staticMesh( world, positions, indices, friction ) {
+
+	return rigidBody.create( world, {
+		shape: triangleMesh.create( { positions, indices } ),
+		motionType: MotionType.STATIC,
+		objectLayer: world._OL_STATIC,
+		friction,
+		restitution: 0,
+		enhancedInternalEdgeRemoval: true,
+	} );
+
+}
+
+// Up-facing triangle a, b, c (indices into positions)
+function upTriangle( positions, indices, a, b, c ) {
+
+	const ux = positions[ b * 3 ] - positions[ a * 3 ], uz = positions[ b * 3 + 2 ] - positions[ a * 3 + 2 ];
+	const vx = positions[ c * 3 ] - positions[ a * 3 ], vz = positions[ c * 3 + 2 ] - positions[ a * 3 + 2 ];
+	if ( uz * vx - ux * vz > 0 ) indices.push( a, b, c );
+	else indices.push( a, c, b );
+
+}
+
+// Tracks with hills (TrackShape): the road as a triangle-mesh ribbon along
+// the centerline at the profile's height, walls as boxes tilted to the
+// slope (none on the outside of gravel cells: that's the cliff), and the
+// hillside terrain. Returns the bodies a car can drive on.
+export function buildHillColliders( world, shape ) {
+
+	const line = shape.line;
+	const ground = [];
+
+	// Road (gravel apart: less grip, so cars slide)
+	{
+
+		const positions = [], indices = [], gravel = [];
+		const count = Math.ceil( line.length / 0.5 );
+
+		for ( let k = 0; k <= count; k ++ ) {
+
+			const s = k / count * line.length;
+			const p = line.pointAt( s ), dir = line.directionAt( s );
+			const half = shape.roadHalf( s ) + 0.3;
+			const y = GROUND_Y + line.heightAt( s );
+			const lx = - Math.cos( dir ), lz = Math.sin( dir );
+			positions.push( p[ 0 ] + lx * half, y, p[ 1 ] + lz * half, p[ 0 ] - lx * half, y, p[ 1 ] - lz * half );
+
+		}
+
+		for ( let k = 0; k < count; k ++ ) {
+
+			const a = k * 2;
+			const list = shape.isUnsealed( ( k + 0.5 ) / count * line.length ) ? gravel : indices;
+			upTriangle( positions, list, a, a + 1, a + 3 );
+			upTriangle( positions, list, a, a + 3, a + 2 );
+
+		}
+
+		ground.push( staticMesh( world, positions, indices, 5.0 ) );
+		if ( gravel.length ) ground.push( staticMesh( world, positions, gravel, GRAVEL_FRICTION ) );
+
+	}
+
+	// Walls, a box every ~1.9 m along each side of each cell
+	const wallPoint = ( s, side, out ) => {
+
+		const p = line.pointAt( s ), dir = line.directionAt( s );
+		return out.set( p[ 0 ] - Math.cos( dir ) * side * WALL_CENTER, ROAD_Y + line.heightAt( s ), p[ 1 ] + Math.sin( dir ) * side * WALL_CENTER );
+
+	};
+
+	for ( let i = 0; i < shape.cells.length; i ++ ) {
+
+		const s0 = shape.cellStart[ i ], s1 = shape.cellStart[ i + 1 ];
+		const mid = ( s0 + s1 ) / 2;
+
+		for ( const side of [ - 1, 1 ] ) {
+
+			if ( shape.unsealed.has( i ) && side === shape.outsideAt( mid ) ) continue;
+
+			let length = 0;
+			for ( let k = 0; k < 8; k ++ ) length += wallPoint( s0 + ( s1 - s0 ) * k / 8, side, _a ).distanceTo( wallPoint( s0 + ( s1 - s0 ) * ( k + 1 ) / 8, side, _b ) );
+			const pieces = Math.max( 1, Math.round( length / 1.9 ) );
+
+			for ( let k = 0; k < pieces; k ++ ) {
+
+				wallPoint( s0 + ( s1 - s0 ) * k / pieces, side, _a );
+				wallPoint( s0 + ( s1 - s0 ) * ( k + 1 ) / pieces, side, _b );
+
+				const len = _a.distanceTo( _b );
+				if ( len < 1e-3 ) continue;
+
+				_along.subVectors( _b, _a ).divideScalar( len );
+				_upish.set( 0, 1, 0 ).addScaledVector( _along, - _along.y ).normalize();
+				_across.crossVectors( _upish, _along );
+				_q.setFromRotationMatrix( _basis.makeBasis( _across, _upish, _along ) );
+
+				rigidBody.create( world, {
+					shape: box.create( { halfExtents: [ WALL_HALF_THICK, WALL_HALF_HEIGHT, len / 2 + 0.05 ] } ),
+					motionType: MotionType.STATIC,
+					objectLayer: world._OL_STATIC,
+					position: [ ( _a.x + _b.x ) / 2 + _upish.x * WALL_HALF_HEIGHT, ( _a.y + _b.y ) / 2 + _upish.y * WALL_HALF_HEIGHT, ( _a.z + _b.z ) / 2 + _upish.z * WALL_HALF_HEIGHT ],
+					quaternion: [ _q.x, _q.y, _q.z, _q.w ],
+					friction: 0.0,
+					restitution: 0.1,
+				} );
+
+			}
+
+		}
+
+	}
+
+	// Terrain, where it rises off the flat ground
+	{
+
+		const t = shape.terrain;
+		const positions = [], indices = [];
+		const index = new Map();
+		const vertex = ( i, j ) => {
+
+			const key = j * t.nx + i;
+			if ( ! index.has( key ) ) {
+
+				index.set( key, positions.length / 3 );
+				positions.push( t.x0 + i * t.step, GROUND_Y + t.vertex( i, j ), t.z0 + j * t.step );
+
+			}
+
+			return index.get( key );
+
+		};
+
+		for ( let j = 0; j < t.nz - 1; j ++ ) {
+
+			for ( let i = 0; i < t.nx - 1; i ++ ) {
+
+				if ( Math.max( t.vertex( i, j ), t.vertex( i + 1, j ), t.vertex( i, j + 1 ), t.vertex( i + 1, j + 1 ) ) < 0.02 ) continue;
+
+				const a = vertex( i, j ), b = vertex( i + 1, j ), c = vertex( i, j + 1 ), d = vertex( i + 1, j + 1 );
+				upTriangle( positions, indices, a, b, d );
+				upTriangle( positions, indices, a, d, c );
+
+			}
+
+		}
+
+		if ( indices.length ) ground.push( staticMesh( world, positions, indices, 5.0 ) );
+
+	}
+
+	return ground;
+
+}
 
 const _debugMat = new THREE.MeshBasicMaterial( { color: 0x00ff00, wireframe: true } );
 

@@ -228,6 +228,26 @@ export class Controls {
 
 	}
 
+	// A short buzz for the kerbs: gamepad rumble where the browser has it,
+	// the phone's vibration on touch (Android; iOS has no vibration API).
+	// strength 0–1, called every frame; it paces itself.
+	buzz( strength, now ) {
+
+		if ( strength <= 0.05 || now - ( this.lastBuzz || 0 ) < 0.12 ) return;
+		this.lastBuzz = now;
+
+		const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+
+		for ( const gp of gamepads ) {
+
+			if ( gp && gp.vibrationActuator && gp.vibrationActuator.playEffect ) gp.vibrationActuator.playEffect( 'dual-rumble', { duration: 90, weakMagnitude: 0.6 * strength, strongMagnitude: 0.25 * strength } ).catch( () => {} );
+
+		}
+
+		if ( Object.keys( this.touches ).length && navigator.vibrate ) navigator.vibrate( Math.round( 10 + 15 * strength ) );
+
+	}
+
 	update() {
 
 		let x = 0, z = 0, mode = 'car';

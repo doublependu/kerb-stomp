@@ -7,7 +7,9 @@ import { CELL_RAW, GRID_SCALE, TYPE_NAMES, computeSpawnPosition } from './Track.
 // or cutting across.
 
 const FINISH = TYPE_NAMES[ 3 ];
-const STORAGE_PREFIX = 'racing.bestLap.';
+// v2: kerbs drag since plan 2, so laps set riding the wall for free before
+// it can't be matched (the old records stay in storage, unused)
+const STORAGE_PREFIX = 'racing.bestLap.v2.';
 const _tmp = new THREE.Vector3();
 
 export function loadBest( trackId ) {
@@ -60,6 +62,10 @@ export class LapCounter {
 
 		this.enabled = cells.some( ( c ) => c[ 2 ] === FINISH );
 
+		// Cells a lap may miss: none where walls stop any cut, a couple on
+		// tracks with gravel corners a car can clip across (Race.js)
+		this.allowMissing = 0;
+
 		if ( this.enabled ) {
 
 			const spawn = computeSpawnPosition( cells );
@@ -91,8 +97,10 @@ export class LapCounter {
 
 	}
 
-	// Returns true when this step completed a lap
-	update( dt, position ) {
+	// Returns true when this step completed a lap. cell: the track cell the
+	// car is on by its centerline projection, if known (a car can leave a
+	// cell's square where there's no wall: gravel, a jump)
+	update( dt, position, cell = null ) {
 
 		if ( ! this.enabled || ! this.running ) return false;
 
@@ -102,6 +110,7 @@ export class LapCounter {
 		const gz = Math.floor( position.z / this.cellSize );
 		const key = gx + ',' + gz;
 		if ( this.requiredCells.has( key ) ) this.visitedCells.add( key );
+		if ( cell && this.requiredCells.has( cell[ 0 ] + ',' + cell[ 1 ] ) ) this.visitedCells.add( cell[ 0 ] + ',' + cell[ 1 ] );
 
 		_tmp.copy( position ).sub( this.lineCenter );
 		const forwardProj = _tmp.dot( this.lineForward );
@@ -116,7 +125,7 @@ export class LapCounter {
 
 			if ( onLine && noTeleport && crossedForward ) {
 
-				if ( this.visitedCells.size === this.requiredCells.size ) {
+				if ( this.visitedCells.size >= this.requiredCells.size - this.allowMissing ) {
 
 					this.lastLap = this.currentLapTime;
 					if ( this.bestLap === null || this.lastLap < this.bestLap ) this.bestLap = this.lastLap;

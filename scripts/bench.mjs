@@ -30,7 +30,7 @@ const tracks = arg( 'tracks', 'classic' ).split( ',' );
 const sizes = arg( 'sizes', '1366x768,1920x1080' ).split( ',' ).map( ( s ) => s.split( 'x' ).map( Number ) );
 const extra = arg( 'query', '' );
 const npcCounts = arg( 'npcs', '4' ).split( ',' ).map( Number );
-const parts = args.includes( '--parts' ) ? [ 'decorations', 'shadows', 'track', 'cars' ] : [];
+const parts = args.includes( '--parts' ) ? [ 'decorations', 'scenery', 'shadows', 'track', 'cars' ] : [];
 const cpuRates = arg( 'cpu', '1,4' ).split( ',' ).map( Number );
 
 const server = arg( 'url', null ) ? null : await startServer( 'vite' );
@@ -73,7 +73,8 @@ async function frameCost() {
 				}, npcs );
 				const page = await context.newPage();
 				await page.goto( `${ url }?playtest&quality=${ tier }&track=${ track }${ extra }` );
-				await page.waitForFunction( ( n ) => document.body.dataset.state === 'ready' && window.__kerb.state().cars === n + 1, npcs, { timeout: 60000 } );
+				// With the scenery in (it loads after the setup screen is up)
+				await page.waitForFunction( ( n ) => document.body.dataset.state === 'ready' && window.__kerb.state().cars === n + 1 && document.getElementById( 'start-btn' ).textContent !== 'Getting ready…', npcs, { timeout: 60000 } );
 				await page.waitForTimeout( 500 );
 
 				// The iGPU's clock ramps and drops between runs: warm up, then

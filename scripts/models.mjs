@@ -15,10 +15,12 @@
 
 import { readdirSync, writeFileSync, mkdirSync } from 'node:fs';
 import { resolve, basename } from 'node:path';
-import { NodeIO, Logger, getBounds } from '@gltf-transform/core';
+import { NodeIO, Logger, Document, getBounds } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
-import { dedup, prune, weld, meshopt, unpartition, mergeDocuments } from '@gltf-transform/functions';
+import { dedup, prune, weld, meshopt, unpartition, mergeDocuments, flatten, join } from '@gltf-transform/functions';
 import { MeshoptEncoder, MeshoptDecoder } from 'meshoptimizer';
+import { KITS } from './import-kits.mjs';
+import { writePNG } from './png.mjs';
 
 const ROOT = resolve( import.meta.dirname, '..' );
 const SRC = resolve( ROOT, 'models/src' );
@@ -69,6 +71,11 @@ const KIT_CARS = {
 const DEBRIS = [ 'debris-bumper', 'debris-door', 'debris-door-window', 'debris-plate-a', 'debris-plate-small-a', 'debris-spoiler-a', 'debris-tire', 'debris-bolt', 'debris-nut' ];
 
 const WHEEL = /^wheel-(front|back)-(left|right)$/;
+
+// Mass (yellow truck = 1) goes with the model's volume, except for vehicles
+// built heavier or lighter than they look
+const MASS_FACTOR = { 'tractor': 1.4, 'tractor-police': 1.4, 'tractor-shovel': 1.5, 'race': 0.85, 'race-future': 0.85 };
+const REFERENCE_VOLUME = 1.4 * 0.75 * 0.775; // the yellow truck
 
 const io = new NodeIO()
 	.registerExtensions( ALL_EXTENSIONS )
@@ -176,6 +183,8 @@ function verify( name, before, beforeBounds, document ) {
 
 	}
 
+	if ( ! beforeBounds ) return;
+
 	const bounds = getBounds( document.getRoot().listScenes()[ 0 ] );
 
 	for ( const k of [ 'min', 'max' ] ) {
@@ -190,10 +199,10 @@ function verify( name, before, beforeBounds, document ) {
 
 }
 
-async function compress( document, name, outPath ) {
+async function compress( document, name, outPath, { checkBounds = true } = {} ) {
 
 	const before = namedTransforms( document );
-	const beforeBounds = getBounds( document.getRoot().listScenes()[ 0 ] );
+	const beforeBounds = checkBounds ? getBounds( document.getRoot().listScenes()[ 0 ] ) : null;
 
 	detachMeshes( document );
 
@@ -221,18 +230,271 @@ function footprint( document, id, kit ) {
 	const s = VEHICLE_SCALE;
 	const r = ( v ) => Math.round( v * 1000 ) / 1000;
 
+	const length = r( ( max[ 2 ] - min[ 2 ] ) * s ), width = r( ( max[ 0 ] - min[ 0 ] ) * s ), height = r( ( max[ 1 ] - min[ 1 ] ) * s );
+
 	return {
 		id,
 		name: kit === 'starter' ? STARTER_CARS[ id ] : KIT_CARS[ id ],
 		kit,
-		length: r( ( max[ 2 ] - min[ 2 ] ) * s ),
-		width: r( ( max[ 0 ] - min[ 0 ] ) * s ),
-		height: r( ( max[ 1 ] - min[ 1 ] ) * s ),
+		length,
+		width,
+		height,
+		mass: Math.round( Math.min( 1.6, Math.max( 0.25, length * width * height / REFERENCE_VOLUME * ( MASS_FACTOR[ id ] || 1 ) ) ) * 100 ) / 100,
 		centerZ: r( ( max[ 2 ] + min[ 2 ] ) / 2 * s ),
 		// Resting body height in model units: the trucks settle to 0.3 (as
 		// in the Godot scene); Car Kit bodies stay where they're modelled
 		bodyY: kit === 'starter' ? 0.3 : r( body.getTranslation()[ 1 ] ),
 	};
+
+}
+
+// ─── Scenery ──────────────────────────────────────────────
+//
+// Kit models become one draw each where they can (materials that differ
+// only by name merged, nodes flattened and joined), with their origin moved
+// to the middle of their footprint at ground level, so js/Scenery.js can
+// place and rotate them by their bounds alone.
+
+// Fantasy Town houses assembled from its wall and roof parts, in unit cells
+// (x, z). Storeys stack one unit each; the front faces +z.
+const PREFABS = {
+	'house-cottage': { cells: [ [ 0, 0 ] ], storeys: [ 'stone' ], roof: 'roof-gable', chimney: true },
+	'house-tall': { cells: [ [ 0, 0 ] ], storeys: [ 'stone', 'wood' ], roof: 'roof-gable' },
+	'house-long': { cells: [ [ 0, 0 ], [ 1, 0 ] ], storeys: [ 'stone' ], roof: 'roof-gable', chimney: true },
+	'house-long-tall': { cells: [ [ 0, 0 ], [ 1, 0 ] ], storeys: [ 'stone', 'wood' ], roof: 'roof-gable' },
+	'house-tower': { cells: [ [ 0, 0 ] ], storeys: [ 'stone', 'stone', 'wood' ], roof: 'roof-point' },
+	// Landmarks: the kit's sails and wheel on a tower and a long house
+	'house-windmill': { cells: [ [ 0, 0 ] ], storeys: [ 'stone', 'stone', 'wood' ], roof: 'roof-point', extra: [ 'windmill', [ 0, 2.4, 0.62 ], Math.PI / 2 ] },
+	'house-watermill': { cells: [ [ 0, 0 ], [ 1, 0 ] ], storeys: [ 'stone', 'wood' ], roof: 'roof-gable', extra: [ 'watermill', [ 1.62, 0.9, 0 ], 0 ] },
+};
+
+const WALLS = {
+	stone: { door: 'wall-door', front: 'wall-window-shutters', side: 'wall-window-small', back: 'wall' },
+	wood: { door: 'wall-wood-door', front: 'wall-wood-window-shutters', side: 'wall-wood-window-shutters', back: 'wall-wood' },
+};
+
+// Wall parts stand on a cell's +x edge; this turns them to face each way
+const FACING = { E: 0, N: Math.PI / 2, W: Math.PI, S: - Math.PI / 2 };
+const STEP = { E: [ 1, 0 ], N: [ 0, - 1 ], W: [ - 1, 0 ], S: [ 0, 1 ] };
+
+function yRotation( angle ) {
+
+	return [ 0, Math.sin( angle / 2 ), 0, Math.cos( angle / 2 ) ];
+
+}
+
+// Merge a part file into `document` under a new node at (x, y, z), turned
+async function placePart( document, file, translation, angle = 0 ) {
+
+	const part = await io.read( file );
+	const roots = part.getRoot().listScenes()[ 0 ].listChildren();
+	const map = mergeDocuments( document, part );
+	const holder = document.createNode().setTranslation( translation ).setRotation( yRotation( angle ) );
+
+	for ( const root of roots ) holder.addChild( map.get( root ) );
+	document.getRoot().listScenes()[ 0 ].addChild( holder );
+
+	for ( const scene of document.getRoot().listScenes() ) if ( scene !== document.getRoot().listScenes()[ 0 ] ) scene.dispose();
+
+}
+
+async function buildPrefab( spec ) {
+
+	const document = new Document().setLogger( new Logger( Logger.Verbosity.WARN ) );
+	document.createBuffer();
+	document.createScene();
+
+	const dir = resolve( SRC, 'fantasy' );
+	const occupied = new Set( spec.cells.map( ( c ) => c + '' ) );
+	const front = spec.cells.filter( ( [ x, z ] ) => ! occupied.has( [ x, z + 1 ] + '' ) );
+
+	for ( let level = 0; level < spec.storeys.length; level ++ ) {
+
+		const walls = WALLS[ spec.storeys[ level ] ];
+
+		for ( const [ x, z ] of spec.cells ) {
+
+			for ( const side of Object.keys( FACING ) ) {
+
+				const [ dx, dz ] = STEP[ side ];
+				if ( occupied.has( [ x + dx, z + dz ] + '' ) ) continue;
+
+				let part = side === 'S' ? walls.front : side === 'N' ? walls.back : walls.side;
+				if ( side === 'S' && level === 0 && x === front[ 0 ][ 0 ] && z === front[ 0 ][ 1 ] ) part = walls.door;
+
+				await placePart( document, resolve( dir, part + '.glb' ), [ x, level, z ], FACING[ side ] );
+
+			}
+
+		}
+
+	}
+
+	const top = spec.storeys.length;
+
+	// Gable roofs run their ridge along x, the long side
+	for ( const [ x, z ] of spec.cells ) await placePart( document, resolve( dir, spec.roof + '.glb' ), [ x, top, z ] );
+	if ( spec.chimney ) await placePart( document, resolve( dir, 'chimney.glb' ), [ spec.cells[ spec.cells.length - 1 ][ 0 ], top - 0.6, 0 ] );
+	if ( spec.extra ) await placePart( document, resolve( dir, spec.extra[ 0 ] + '.glb' ), spec.extra[ 1 ], spec.extra[ 2 ] );
+
+	await document.transform( unpartition() );
+	return document;
+
+}
+
+// The Racing Kit colours each part with its own material. Bake every colour
+// into one generated palette texture (a 16 px swatch each) so its props
+// draw like the colormap kits: one material, one draw.
+const PALETTE_SIZE = 128, SWATCH = 16;
+const palette = [];
+
+function linearToSRGB( c ) {
+
+	return Math.round( 255 * ( c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow( c, 1 / 2.4 ) - 0.055 ) );
+
+}
+
+function paletteIndex( color ) {
+
+	const key = color.slice( 0, 3 ).map( linearToSRGB ).join( ',' );
+	let i = palette.indexOf( key );
+	if ( i < 0 ) i = palette.push( key ) - 1;
+	if ( i >= ( PALETTE_SIZE / SWATCH ) ** 2 ) throw new Error( 'racing palette is full' );
+	return i;
+
+}
+
+function bakePalette( document ) {
+
+	const root = document.getRoot();
+	const buffer = root.listBuffers()[ 0 ];
+	const texture = document.createTexture( 'colormap-racing' ).setImage( PLACEHOLDER_PNG ).setMimeType( 'image/png' );
+	const material = document.createMaterial( 'colormap' ).setBaseColorTexture( texture ).setRoughnessFactor( 1 ).setMetallicFactor( 0 );
+	const perRow = PALETTE_SIZE / SWATCH;
+
+	for ( const mesh of root.listMeshes() ) {
+
+		for ( const prim of mesh.listPrimitives() ) {
+
+			const i = paletteIndex( prim.getMaterial().getBaseColorFactor() );
+			const u = ( ( i % perRow ) + 0.5 ) / perRow, v = ( Math.floor( i / perRow ) + 0.5 ) / perRow;
+			const count = prim.getAttribute( 'POSITION' ).getCount();
+			const uvs = new Float32Array( count * 2 );
+			for ( let k = 0; k < count; k ++ ) uvs.set( [ u, v ], k * 2 );
+
+			prim.setAttribute( 'TEXCOORD_0', document.createAccessor().setType( 'VEC2' ).setArray( uvs ).setBuffer( buffer ) );
+			prim.setMaterial( material );
+
+		}
+
+	}
+
+	for ( const m of root.listMaterials() ) if ( m !== material ) m.dispose();
+	for ( const t of root.listTextures() ) if ( t !== texture ) t.dispose();
+
+}
+
+function writePalette() {
+
+	const pixels = new Uint8Array( PALETTE_SIZE * PALETTE_SIZE * 4 ).fill( 255 );
+	const perRow = PALETTE_SIZE / SWATCH;
+
+	palette.forEach( ( key, i ) => {
+
+		const rgb = key.split( ',' ).map( Number );
+		const x0 = ( i % perRow ) * SWATCH, y0 = Math.floor( i / perRow ) * SWATCH;
+
+		for ( let y = y0; y < y0 + SWATCH; y ++ ) for ( let x = x0; x < x0 + SWATCH; x ++ ) pixels.set( rgb, ( y * PALETTE_SIZE + x ) * 4 );
+
+	} );
+
+	mkdirSync( resolve( SRC, 'racing/Textures' ), { recursive: true } );
+	writeFileSync( resolve( SRC, 'racing/Textures/colormap.png' ), writePNG( PALETTE_SIZE, PALETTE_SIZE, pixels ) );
+
+}
+
+// One material and one mesh where the model allows, origin at the middle of
+// its footprint on the ground. Returns the footprint (kit units).
+async function prepareScenery( document ) {
+
+	const root = document.getRoot();
+	const keep = root.listMaterials()[ 0 ];
+
+	// Kenney's "colormap" and "colormap-specular" differ only in name
+	for ( const mesh of root.listMeshes() ) {
+
+		for ( const prim of mesh.listPrimitives() ) {
+
+			const m = prim.getMaterial();
+			if ( m !== keep && m.getBaseColorTexture() && keep.getBaseColorTexture() && m.getRoughnessFactor() === keep.getRoughnessFactor() && m.getMetallicFactor() === keep.getMetallicFactor() ) prim.setMaterial( keep );
+
+		}
+
+	}
+
+	await document.transform( dedup(), flatten(), join( { keepNamed: false } ), prune( { keepLeaves: true, keepSolidTextures: true } ) );
+
+	const scene = root.listScenes()[ 0 ];
+	const { min, max } = getBounds( scene );
+	const holder = document.createNode( 'scenery' ).setTranslation( [ - ( min[ 0 ] + max[ 0 ] ) / 2, - min[ 1 ], - ( min[ 2 ] + max[ 2 ] ) / 2 ] );
+	for ( const child of scene.listChildren() ) holder.addChild( child );
+	scene.addChild( holder );
+
+	const r = ( v ) => Math.round( v * 1000 ) / 1000;
+	return { w: r( max[ 0 ] - min[ 0 ] ), d: r( max[ 2 ] - min[ 2 ] ), h: r( max[ 1 ] - min[ 1 ] ) };
+
+}
+
+// Gravel versions of the track pieces: no walls, asphalt → dirt, kerbs →
+// a tan verge. Faces are picked by which colormap swatch (16 columns × 4
+// rows) they sample.
+const GRAVEL = {
+	'2,3': [ 1, 2 ], '3,3': [ 1, 2 ], '4,3': [ 1, 2 ], '5,3': [ 1, 2 ],
+	'11,2': [ 0, 2 ], '11,3': [ 0, 2 ], '10,2': [ 0, 2 ], '10,3': [ 0, 2 ],
+	'6,2': [ 14, 3 ], '7,2': [ 14, 3 ],
+};
+const WALL_SWATCHES = new Set( [ '8,3', '9,3' ] );
+
+function gravelize( document ) {
+
+	for ( const mesh of document.getRoot().listMeshes() ) {
+
+		for ( const prim of mesh.listPrimitives() ) {
+
+			const uv = prim.getAttribute( 'TEXCOORD_0' );
+			const indices = prim.getIndices();
+			const swatch = ( i ) => {
+
+				const [ u, v ] = uv.getElement( i, [] );
+				return [ Math.min( 15, Math.floor( u * 16 ) ), Math.min( 3, Math.floor( v * 4 ) ) ];
+
+			};
+
+			const kept = [];
+
+			for ( let t = 0; t < indices.getCount(); t += 3 ) {
+
+				const tri = [ indices.getScalar( t ), indices.getScalar( t + 1 ), indices.getScalar( t + 2 ) ];
+				if ( ! WALL_SWATCHES.has( swatch( tri[ 0 ] ) + '' ) ) kept.push( ...tri );
+
+			}
+
+			for ( let i = 0; i < uv.getCount(); i ++ ) {
+
+				const [ col, row ] = swatch( i );
+				const to = GRAVEL[ col + ',' + row ];
+				if ( ! to ) continue;
+
+				const [ u, v ] = uv.getElement( i, [] );
+				uv.setElement( i, [ u + ( to[ 0 ] - col ) / 16, v + ( to[ 1 ] - row ) / 4 ] );
+
+			}
+
+			indices.setArray( new Uint32Array( kept ) );
+
+		}
+
+	}
 
 }
 
@@ -300,13 +562,69 @@ for ( const id of Object.keys( KIT_CARS ) ) {
 
 }
 
+// Gravel track pieces (the bounds shrink: no walls)
+
+for ( const id of [ 'track-straight', 'track-corner' ] ) {
+
+	const document = await io.read( resolve( SRC, id + '.glb' ) );
+	gravelize( document );
+	placeholderTextures( document, 'starter' );
+	report.push( [ id + '-gravel.glb', await compress( document, id, resolve( OUT, id + '-gravel.glb' ), { checkBounds: false } ) ] );
+
+}
+
+// Scenery kits, the Racing Kit's palette and the Fantasy Town prefabs
+
+const PREFAB_PARTS = new Set( KITS.fantasy.models.slice( KITS.fantasy.models.indexOf( 'windmill' ) ) );
+const scenery = {};
+
+for ( const [ kit, def ] of Object.entries( KITS ) ) {
+
+	mkdirSync( resolve( OUT, kit ), { recursive: true } );
+
+	for ( const name of def.models ) {
+
+		if ( kit === 'fantasy' && PREFAB_PARTS.has( name ) ) continue;
+
+		const document = await io.read( resolve( SRC, kit, name + '.glb' ) );
+		if ( kit === 'racing' ) bakePalette( document );
+		else placeholderTextures( document, kit );
+
+		scenery[ kit + '/' + name ] = { kit, ...await prepareScenery( document ) };
+		report.push( [ kit + '/' + name + '.glb', await compress( document, name, resolve( OUT, kit, name + '.glb' ) ) ] );
+
+	}
+
+}
+
+writePalette();
+
+for ( const [ name, spec ] of Object.entries( PREFABS ) ) {
+
+	const document = await buildPrefab( spec );
+	placeholderTextures( document, 'fantasy' );
+	scenery[ 'fantasy/' + name ] = { kit: 'fantasy', ...await prepareScenery( document ) };
+	report.push( [ 'fantasy/' + name + '.glb', await compress( document, name, resolve( OUT, 'fantasy', name + '.glb' ) ) ] );
+
+}
+
+writeFileSync( resolve( ROOT, 'js/SceneryList.js' ),
+	'// Generated by scripts/models.mjs; don\'t edit. Each scenery model\'s\n' +
+	'// footprint (w along x, d along z) and height in its kit\'s units, with its\n' +
+	'// origin at the middle of the footprint on the ground.\n\n' +
+	'export const SCENERY = {\n' +
+	Object.entries( scenery ).map( ( [ id, s ] ) => `\t'${ id }': { kit: '${ s.kit }', w: ${ s.w }, d: ${ s.d }, h: ${ s.h } },` ).join( '\n' ) +
+	'\n};\n'
+);
+
 const order = [ ...Object.keys( STARTER_CARS ), ...Object.keys( KIT_CARS ) ];
 cars.sort( ( a, b ) => order.indexOf( a.id ) - order.indexOf( b.id ) );
 
 writeFileSync( resolve( ROOT, 'js/CarList.js' ),
 	'// Generated by scripts/models.mjs from the models\' bounds; don\'t edit.\n' +
 	'// length / width / height / centerZ are in world units (after the 0.5\n' +
-	'// vehicle scale); bodyY is the body node\'s resting height in model units.\n\n' +
+	'// vehicle scale); mass is relative to the yellow truck (from the volume);\n' +
+	'// bodyY is the body node\'s resting height in model units.\n\n' +
 	'export const CARS = [\n' +
 	cars.map( ( c ) => '\t{ ' + Object.entries( c ).map( ( [ k, v ] ) => k + ': ' + ( typeof v === 'string' ? `'${ v }'` : v ) ).join( ', ' ) + ' }' ).join( ',\n' ) +
 	',\n];\n\n' +

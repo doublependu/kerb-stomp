@@ -115,7 +115,12 @@ const DECO_CELLS = [
 	[  2,  4, 'decoration-forest', 0 ],
 ];
 
-export function buildTrack( scene, models, customCells, { chunk = DECO_CHUNK } = {} ) {
+// shape: the track's TrackShape. Hilly tracks come drawn already (bent:
+// the pieces bent to their profile and the hillside terrain, Bend.js), and
+// skip decoration tiles where the hillside would leave them floating.
+// reserved: cells (keys 'x,z') the scenery has planned for (Scenery.js),
+// left without a decoration tile.
+export function buildTrack( scene, models, customCells, { chunk = DECO_CHUNK, shape = null, bent = null, reserved = new Map() } = {} ) {
 
 	const trackGroup = new THREE.Group();
 	trackGroup.position.y = -0.5;
@@ -124,11 +129,21 @@ export function buildTrack( scene, models, customCells, { chunk = DECO_CHUNK } =
 	const decoGroup = new THREE.Group();
 
 	const cells = customCells || TRACK_CELLS;
+	const hilly = Boolean( shape && shape.hilly && bent );
 
-	for ( const [ gx, gz, key, orient ] of cells ) {
+	if ( hilly ) {
 
-		const piece = placePiece( models, key, gx, gz, orient );
-		if ( piece ) trackPieceGroup.add( piece );
+		for ( const part of [ bent.track, bent.bridge, bent.arch ] ) if ( part ) trackPieceGroup.add( part );
+		scene.add( bent.terrain );
+
+	} else {
+
+		for ( const [ gx, gz, key, orient ] of cells ) {
+
+			const piece = placePiece( models, key, gx, gz, orient );
+			if ( piece ) trackPieceGroup.add( piece );
+
+		}
 
 	}
 
@@ -162,6 +177,7 @@ export function buildTrack( scene, models, customCells, { chunk = DECO_CHUNK } =
 			for ( const [ gx, gz, key, orient ] of DECO_CELLS ) {
 
 				occupied.add( gx + ',' + gz );
+				if ( reserved.has( gx + ',' + gz ) ) continue;
 				minX = Math.min( minX, gx );
 				maxX = Math.max( maxX, gx );
 				minZ = Math.min( minZ, gz );
@@ -191,7 +207,10 @@ export function buildTrack( scene, models, customCells, { chunk = DECO_CHUNK } =
 
 			for ( let gx = minX - pad; gx <= maxX + pad; gx ++ ) {
 
-				if ( occupied.has( gx + ',' + gz ) ) continue;
+				if ( occupied.has( gx + ',' + gz ) || reserved.has( gx + ',' + gz ) ) continue;
+
+				// The hillside covers it
+				if ( hilly && shape.terrain.cellMax( gx, gz ) > 0.05 ) continue;
 
 				const distX = gx < minX ? minX - gx : gx > maxX ? gx - maxX : 0;
 				const distZ = gz < minZ ? minZ - gz : gz > maxZ ? gz - maxZ : 0;
@@ -294,7 +313,7 @@ export function buildTrack( scene, models, customCells, { chunk = DECO_CHUNK } =
 
 	} );
 
-	return { trackGroup, trackPieceGroup, decoGroup };
+	return { trackGroup, trackPieceGroup, decoGroup, terrain: hilly ? bent.terrain : null, bridge: hilly ? bent.bridge : null, arch: hilly ? bent.arch : null };
 
 }
 

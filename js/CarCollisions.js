@@ -1,11 +1,17 @@
 import { rigidBody } from 'crashcat';
 
-// Car-to-car contact. Every car drives on the same 1m physics sphere, so they
-// all handle the same; bumping uses a separate 2D footprint per model instead
-// (a capsule along the car, from CarList.js bounds), so a kart is small and
-// a fire truck long. Mass goes with footprint area: big vehicles shove small
-// ones. Off-centre hits also spin the car, so a tap on the rear quarter can
-// turn someone round.
+// Car-to-car contact. Every car drives on the same 1m physics sphere;
+// bumping uses a separate 2D footprint per model instead (a capsule along
+// the car, from CarList.js bounds), so a kart is small and a fire truck
+// long. Mass (CarList.js) decides who shoves whom. Off-centre hits also spin
+// the car, so a tap on the rear quarter can turn someone round.
+//
+// How hard a hit is for each car is its velocity change, which comes from
+// the closing speed and the two masses alone. Across its heading: under
+// spinAt it's knocked aside, up to launchAt it spins and loses its steering
+// for a moment, beyond that it's sent flying, tumbling, and lands on its
+// wheels, side or roof depending on how far it turned over. Nose or tail on
+// only costs speed.
 //
 // The sphere-sphere physics contact is off (Race.js), so this is the only
 // thing that makes cars collide.
@@ -19,10 +25,21 @@ export const COLLISION = {
 	massExponent: 1,
 	// How much of a frontal hit comes off the car's drive speed
 	speedLoss: 0.6,
+	// Sideways velocity change (m/s) that spins a car / sends it flying
+	spinAt: 4,
+	launchAt: 9.5,
+	// Upward m/s per m/s over launchAt; roll rate (rad/s) per m/s, from
+	// tumbleBase below launchAt: a launch just over the line lands back on
+	// its wheels, a harder one on its roof, harder still all the way round
+	lift: 0.8,
+	tumble: 2.1,
+	tumbleBase: 1.05,
 };
 
 const SPHERE_RADIUS = 0.5;
-const REFERENCE_AREA = 1.4 * 0.75; // the yellow truck
+
+// Cars further apart in height don't meet (one on a bridge, one under it)
+const HEIGHT_APART = 1.2;
 
 // linearSpeed (Vehicle) per m/s of ground speed, measured at top speed
 export const LINEAR_SPEED_PER_MS = 0.1;
@@ -32,7 +49,7 @@ const _pa = [ 0, 0 ], _pb = [ 0, 0 ];
 
 export function carMass( def ) {
 
-	return Math.pow( def.length * def.width / REFERENCE_AREA, COLLISION.massExponent );
+	return Math.pow( def.mass ?? 1, COLLISION.massExponent );
 
 }
 
@@ -143,6 +160,7 @@ export function resolveCarCollisions( world, cars, onHit ) {
 			const dz = B.vehicle.spherePos.z - A.vehicle.spherePos.z;
 			const reach = ( A.def.length + B.def.length ) / 2 + 0.2;
 			if ( dx * dx + dz * dz > reach * reach ) continue;
+			if ( Math.abs( B.vehicle.spherePos.y - A.vehicle.spherePos.y ) > HEIGHT_APART ) continue;
 
 			const rB = footprint( B, _b0, _b1 );
 			closestPoints( _a0, _a1, _b0, _b1, _pa, _pb );
@@ -207,6 +225,9 @@ export function resolveCarCollisions( world, cars, onHit ) {
 			slow( A, - jx * wA, - jz * wA );
 			slow( B, jx * wB, jz * wB );
 
+			react( world, A, - jx * wA, - jz * wA, contactX, contactZ );
+			react( world, B, jx * wB, jz * wB, contactX, contactZ );
+
 			if ( onHit ) onHit( A, B, - vn, contactX, contactZ );
 
 		}
@@ -222,6 +243,34 @@ function spin( car, cx, cz, jx, jz, mass ) {
 	const inertia = mass * ( car.def.length ** 2 + car.def.width ** 2 ) / 12;
 	v.spin += COLLISION.yaw * ( rz * jx - rx * jz ) / inertia;
 	v.spin = Math.max( - 8, Math.min( 8, v.spin ) );
+
+}
+
+// A hard sideways hit: a spin and a moment without steering, or a launch
+function react( world, car, dvx, dvz, cx, cz ) {
+
+	const v = car.vehicle;
+	const f = car.forward;
+
+	// + pushed toward the car's right
+	const across = dvx * f.z - dvz * f.x;
+	const size = Math.abs( across );
+	if ( size < COLLISION.spinAt ) return;
+
+	v.controlLoss = Math.max( v.controlLoss, 0.35 );
+	if ( size < COLLISION.launchAt || v.tumbling ) return;
+
+	const lift = Math.min( 6, 2 + ( size - COLLISION.launchAt ) * COLLISION.lift );
+	const body = v.rigidBody;
+	const lv = body.motionProperties.linearVelocity;
+	rigidBody.setLinearVelocity( world, body, [ lv[ 0 ], lv[ 1 ] + lift, lv[ 2 ] ] );
+	v.sphereVel.y += lift;
+
+	// Rolls away from the hit, and pitches if it was struck near an end
+	const along = ( cx - v.spherePos.x ) * f.x + ( cz - v.spherePos.z ) * f.z;
+	v.tumble.set( along / Math.max( 0.3, car.def.length / 2 ) * 2.5, 0, - Math.sign( across ) * ( size - COLLISION.launchAt + COLLISION.tumbleBase ) * COLLISION.tumble );
+	v.tumbling = true;
+	v.tumbleTime = 0;
 
 }
 

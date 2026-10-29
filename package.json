@@ -11,6 +11,7 @@
     "deploy": "node scripts/check-clean.mjs && npm run build && wrangler deploy",
     "playtest": "node scripts/playtest/run.mjs",
     "perf:load": "node scripts/measure-load.mjs",
+    "kits": "node scripts/import-kits.mjs",
     "models": "node scripts/models.mjs",
     "thumbs": "node scripts/car-thumbs.mjs",
     "bench": "node scripts/bench.mjs",

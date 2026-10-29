@@ -5,16 +5,18 @@
 //   npm run sim -- --soak                      9 cars × 20 laps × every track × 3 seeds
 //   npm run sim -- --soak --tracks monza --laps 5 --seeds 1
 //   npm run sim -- --balance                   a stand-in player races the field twice, as in the game
+//   npm run sim -- --fit                       grip and braking for the NPCs' speed profile (RacingLine.DRIVE)
 
 import * as THREE from 'three';
 import { registerAll } from 'crashcat';
 import { Race, STEP } from '../../js/Race.js';
 import { AIDriver, rng } from '../../js/AIDriver.js';
-import { TRACKS } from '../../js/Tracks.js';
-import { centerline } from '../../js/TrackPath.js';
+import { TRACKS, trackLine } from '../../js/Tracks.js';
+import { TrackShape } from '../../js/TrackShape.js';
 import { CARS } from '../../js/CarList.js';
 import { MAX_SPEED } from '../../js/Vehicle.js';
-import { planField } from '../../js/Difficulty.js';
+import { planField, FIRST_RACE } from '../../js/Difficulty.js';
+import { DRIVE } from '../../js/RacingLine.js';
 
 const args = process.argv.slice( 2 );
 const arg = ( name, fallback ) => {
@@ -47,7 +49,8 @@ function stubModel() {
 
 function makeRace( track ) {
 
-	return new Race( { cells: track.cells, line: centerline( track.cells ), classic: track.id === 'classic', ai: track.ai } );
+	const line = trackLine( track );
+	return new Race( { cells: track.cells, line, shape: new TrackShape( track, line ), classic: track.id === 'classic', ai: track.ai } );
 
 }
 
@@ -91,7 +94,7 @@ if ( args.includes( '--calibrate' ) ) {
 	const skills = [ 0, 0.25, 0.5, 0.75, 1 ];
 	const laps = Number( arg( 'laps', 4 ) );
 
-	console.log( 'Lap time (median of laps 2+) for one AI car at full pace, by skill\n' );
+	console.log( 'Lap time (median of laps 2+, over several seeds) for one AI car at full pace, by skill\n' );
 	console.log( [ 'track', ...skills.map( ( s ) => 'skill ' + s ), 'top m/s', 'm/s per speed' ].join( '\t' ) );
 
 	for ( const track of tracks ) {
@@ -101,27 +104,36 @@ if ( args.includes( '--calibrate' ) ) {
 
 		for ( const skill of skills ) {
 
-			const race = makeRace( track );
-			const car = race.addCar( CARS[ 0 ], stubModel(), { driver: new AIDriver( race.line, { skill, seed: 7 } ) } );
-			race.setup( 'race', race.cars, 99 );
+			// Median over several drivers' seeds: low skills are erratic
+			const times = [];
 
-			const step = race.step.bind( race );
-			race.step = ( input ) => {
+			for ( let seed = 7; seed < 7 + Number( arg( 'seeds', 5 ) ); seed ++ ) {
 
-				step( input );
-				const speed = Math.hypot( car.vehicle.sphereVel.x, car.vehicle.sphereVel.z );
+				const race = makeRace( track );
+				const car = race.addCar( CARS[ 0 ], stubModel(), { driver: new AIDriver( race.line, { skill, seed } ) } );
+				race.setup( 'race', race.cars, 99 );
 
-				if ( speed > top ) {
+				const step = race.step.bind( race );
+				race.step = ( input ) => {
 
-					top = speed;
-					ratio = speed / Math.max( 1e-3, car.vehicle.linearSpeed );
+					step( input );
+					const speed = Math.hypot( car.vehicle.sphereVel.x, car.vehicle.sphereVel.z );
 
-				}
+					if ( speed > top ) {
 
-			};
+						top = speed;
+						ratio = speed / Math.max( 1e-3, car.vehicle.linearSpeed );
 
-			run( race, laps, laps * 90 );
-			row.push( car.lapTimes.length > 1 ? median( car.lapTimes.slice( 1 ) ).toFixed( 2 ) : 'DNF' );
+					}
+
+				};
+
+				run( race, laps, laps * 90 );
+				times.push( ...car.lapTimes.slice( 1 ) );
+
+			}
+
+			row.push( times.length ? median( times ).toFixed( 2 ) : 'DNF' );
 
 		}
 
@@ -131,6 +143,80 @@ if ( args.includes( '--calibrate' ) ) {
 	}
 
 	console.log( `\nMAX_SPEED (Vehicle) = ${ MAX_SPEED }` );
+
+}
+
+// The fastest grip / braking pair for a skill-1 NPC, over every track
+// (each track's lap relative to its best over the grid)
+if ( args.includes( '--fit' ) ) {
+
+	const grips = arg( 'grips', '40,70,200' ).split( ',' ).map( Number );
+	const brakes = arg( 'brakes', '15,30' ).split( ',' ).map( Number );
+	const yaws = arg( 'yaws', '99' ).split( ',' ).map( Number );
+	const results = [];
+
+	for ( const grip of grips ) for ( const yaw of yaws ) {
+
+		for ( const brake of brakes ) {
+
+			DRIVE.grip = grip;
+			DRIVE.brake = brake;
+			DRIVE.yaw = yaw;
+			const laps = [];
+
+			for ( const track of tracks ) {
+
+				const race = makeRace( track );
+				race.racing.profiles.clear();
+				const car = race.addCar( CARS[ 0 ], stubModel(), { driver: new AIDriver( race.line, { skill: 1, seed: 7 } ) } );
+				race.setup( 'race', race.cars, 99 );
+				run( race, 3, 3 * 90 );
+				laps.push( car.lapTimes.length > 1 ? median( car.lapTimes.slice( 1 ) ) : Infinity );
+
+			}
+
+			results.push( { grip, brake, yaw, laps } );
+			console.log( `grip ${ grip } brake ${ brake } yaw ${ yaw }: ${ laps.map( ( t ) => t.toFixed( 2 ) ).join( ' ' ) }` );
+
+		}
+
+	}
+
+	const best = tracks.map( ( _, i ) => Math.min( ...results.map( ( r ) => r.laps[ i ] ) ) );
+	for ( const r of results ) r.score = r.laps.reduce( ( a, t, i ) => a + t / best[ i ], 0 ) / tracks.length;
+	results.sort( ( a, b ) => a.score - b.score );
+	console.log( '\nBest:', results.slice( 0, 5 ).map( ( r ) => `grip ${ r.grip } brake ${ r.brake } yaw ${ r.yaw } (${ ( ( r.score - 1 ) * 100 ).toFixed( 1 ) }% off the best per track)` ).join( '; ' ) );
+
+}
+
+// Weight classes: the same NPC (skill --skill) in a light, a medium and a
+// heavy car, alone, on every track. Lap time relative to the yellow truck.
+if ( args.includes( '--classes' ) ) {
+
+	const skill = Number( arg( 'skill', 1 ) );
+	const laps = Number( arg( 'laps', 6 ) );
+	const ids = arg( 'cars', 'kart-oobi,race,sedan-sports,vehicle-truck-yellow,van,ambulance,garbage-truck' ).split( ',' );
+
+	console.log( `Lap (median of laps 2+) relative to the yellow truck, skill ${ skill }\n` );
+	console.log( [ 'track'.padEnd( 13 ), ...ids.map( ( id ) => id.slice( 0, 12 ).padStart( 13 ) ) ].join( '' ) );
+
+	for ( const track of tracks ) {
+
+		// Median over several drivers' seeds: one bad lap shouldn't decide it
+		const times = ids.map( ( id ) => median( [ 7, 8, 9, 10, 11 ].slice( 0, Number( arg( 'seeds', 5 ) ) ).flatMap( ( seed ) => {
+
+			const race = makeRace( track );
+			const car = race.addCar( CARS.find( ( c ) => c.id === id ), stubModel(), { driver: new AIDriver( race.line, { skill, seed } ) } );
+			race.setup( 'race', race.cars, 99 );
+			run( race, laps, laps * 90 );
+			return car.lapTimes.slice( 1 );
+
+		} ) ) );
+
+		const base = times[ ids.indexOf( 'vehicle-truck-yellow' ) ];
+		console.log( [ track.id.padEnd( 13 ), ...times.map( ( t ) => ( t / base ).toFixed( 3 ).padStart( 13 ) ) ].join( '' ) );
+
+	}
 
 }
 
@@ -158,6 +244,14 @@ if ( args.includes( '--soak' ) ) {
 			}
 
 			race.setup( 'race', race.cars, laps );
+			const step = race.step.bind( race );
+			race.step = ( input ) => {
+
+				for ( const c of race.cars ) c.wasTumbling = c.vehicle.tumbling;
+				step( input );
+				for ( const c of race.cars ) if ( c.vehicle.tumbling && ! c.wasTumbling ) c.launches = ( c.launches || 0 ) + 1;
+
+			};
 			const t0 = performance.now();
 			const simTime = run( race, laps, laps * 80 );
 			const wall = performance.now() - t0;
@@ -166,7 +260,7 @@ if ( args.includes( '--soak' ) ) {
 
 				const done = c.lapTimes.length;
 				if ( done < laps ) failures ++;
-				return `  ${ c.name.padEnd( 15 ) } skill ${ c.driver.skill.toFixed( 2 ) }  laps ${ String( done ).padStart( 2 ) }  median ${ done ? median( c.lapTimes ).toFixed( 2 ) : '-' }  best ${ done ? Math.min( ...c.lapTimes ).toFixed( 2 ) : '-' }  respawns ${ c.respawns }  car hits ${ c.carHits }`;
+				return `  ${ c.name.padEnd( 15 ) } skill ${ c.driver.skill.toFixed( 2 ) }  laps ${ String( done ).padStart( 2 ) }  median ${ done ? median( c.lapTimes ).toFixed( 2 ) : '-' }  best ${ done ? Math.min( ...c.lapTimes ).toFixed( 2 ) : '-' }  wand ${ c.respawns }  launches ${ c.launches || 0 }  car hits ${ c.carHits }`;
 
 			} );
 
@@ -223,7 +317,7 @@ if ( args.includes( '--balance' ) ) {
 
 				for ( const result of results ) {
 
-					race.aimField( best ?? track.par, best !== null );
+					race.aimField( best ?? track.par * FIRST_RACE, best !== null );
 					race.setup( 'race', [ ...field, player ], track.laps );
 					race.start();
 

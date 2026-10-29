@@ -6,12 +6,19 @@ const _forward = new THREE.Vector3();
 const _right = new THREE.Vector3();
 const _zAxis = new THREE.Vector3();
 const _newZ = new THREE.Vector3();
+const _airUp = new THREE.Vector3();
 const _mat4 = new THREE.Matrix4();
 const _quat = new THREE.Quaternion();
 const _up = new THREE.Vector3( 0, 1, 0 );
 
 const LINEAR_DAMP = 0.1;
 export const MAX_SPEED = 1.5;
+
+// Handling by mass (CarList.js, the yellow truck = 1 drives as the game
+// always has): lighter cars pick up speed and stop quicker but coast less
+// and bob about; heavier ones the other way round. Top speed is the same
+// for every car. The exponents are tunable (?tune).
+export const HANDLING = { accel: 0.25, coast: 0.6, brake: 0.3, wobble: 0.5 };
 
 // Collision spin (rad/s) bleeds off at this rate
 const SPIN_DECAY = 3;
@@ -57,10 +64,29 @@ export class Vehicle {
 		this.inputX = 0;
 		this.inputZ = 0;
 
+		this.setMass( 1 );
+
+		// After a hard hit: steering gone for a moment (s); flying end over
+		// end (rad/s about the car's right and forward axes); or lying on its
+		// side or roof
+		this.controlLoss = 0;
+		this.judder = 0; // 0–1, on the kerbs (Race.js)
+		this.tumble = new THREE.Vector3();
+		this.tumbling = false;
+		this.tumbleTime = 0;
+		this.flipped = false;
+
 		this.driftIntensity = 0;
 
 		// Yaw rate from car-to-car hits (CarCollisions), on top of steering
 		this.spin = 0;
+
+		// The ground under the sphere (Race.js sets these each step from
+		// TrackShape): its normal, and whether the car is on it or flying
+		this.groundNormal = new THREE.Vector3( 0, 1, 0 );
+		this.grounded = true;
+		this.wasGrounded = true;
+		this.landing = 0; // vertical speed of the last landing, for effects
 
 		// Where a fall off the world puts the truck back, unless onFall
 		// handles it (races put the car back where it left the track)
@@ -68,6 +94,16 @@ export class Vehicle {
 		this.spawnAngle = 0;
 		this.onFall = null;
 		this.resets = 0;
+
+	}
+
+	setMass( mass ) {
+
+		this.mass = mass;
+		this.accelRate = 1.5 * Math.pow( mass, - HANDLING.accel );
+		this.coastRate = 1.5 * Math.pow( mass, - HANDLING.coast );
+		this.brakeRate = 8 * Math.pow( mass, - HANDLING.brake );
+		this.wobble = Math.pow( mass, - HANDLING.wobble );
 
 	}
 
@@ -122,8 +158,17 @@ export class Vehicle {
 
 	update( dt, controlsInput ) {
 
-		this.inputX = controlsInput.x;
-		this.inputZ = controlsInput.z;
+		// No driving while flying end over end or lying on the roof
+		const helpless = this.tumbling || this.flipped;
+		this.inputX = helpless ? 0 : controlsInput.x;
+		this.inputZ = helpless ? 0 : controlsInput.z;
+
+		if ( this.controlLoss > 0 ) {
+
+			this.controlLoss -= dt;
+			this.inputX = 0;
+
+		}
 
 		const throttle = Math.hypot( this.inputX, this.inputZ );
 
@@ -140,14 +185,15 @@ export class Vehicle {
 			this.inputX = THREE.MathUtils.clamp( - cross * 2, - 1, 1 );
 			this.inputZ = Math.min( 1, throttle );
 
-			this.linearSpeed = THREE.MathUtils.lerp( this.linearSpeed, MAX_SPEED * this.inputZ, dt * 1.5 );
+			const target = MAX_SPEED * this.inputZ;
+			this.linearSpeed = THREE.MathUtils.lerp( this.linearSpeed, target, dt * ( target > this.linearSpeed ? this.accelRate : this.coastRate ) );
 
 		} else if ( controlsInput.mode === 'world' ) {
 
 			// Thumb lifted: coast down
 			this.inputX = 0;
 			this.inputZ = 0;
-			this.linearSpeed = THREE.MathUtils.lerp( this.linearSpeed, 0, dt * 1.5 );
+			this.linearSpeed = THREE.MathUtils.lerp( this.linearSpeed, 0, dt * this.coastRate );
 
 		} else {
 
@@ -157,7 +203,8 @@ export class Vehicle {
 
 			const steeringGrip = THREE.MathUtils.clamp( Math.abs( this.linearSpeed ), 0.2, 1.0 );
 
-			const targetAngular = - this.inputX * steeringGrip * 4 * direction;
+			// Barely any steering in the air
+			const targetAngular = - this.inputX * steeringGrip * 4 * direction * ( this.grounded ? 1 : 0.3 );
 			this.angularSpeed = THREE.MathUtils.lerp( this.angularSpeed, targetAngular, dt * 4 );
 
 			this.container.rotateY( this.angularSpeed * dt );
@@ -166,7 +213,7 @@ export class Vehicle {
 
 			if ( targetSpeed < 0 && this.linearSpeed > 0.01 ) {
 
-				this.linearSpeed = THREE.MathUtils.lerp( this.linearSpeed, 0.0, dt * 8 );
+				this.linearSpeed = THREE.MathUtils.lerp( this.linearSpeed, 0.0, dt * this.brakeRate );
 
 			} else if ( targetSpeed < 0 ) {
 
@@ -174,7 +221,8 @@ export class Vehicle {
 
 			} else {
 
-				this.linearSpeed = THREE.MathUtils.lerp( this.linearSpeed, targetSpeed * MAX_SPEED, dt * 1.5 );
+				const target = targetSpeed * MAX_SPEED;
+				this.linearSpeed = THREE.MathUtils.lerp( this.linearSpeed, target, dt * ( target > this.linearSpeed ? this.accelRate : this.coastRate ) );
 
 			}
 
@@ -188,18 +236,55 @@ export class Vehicle {
 
 		}
 
+		// Flying end over end until it lands; then it lands on its wheels
+		// (the upright pull below takes over) or on its side or roof
+		if ( this.tumbling ) {
+
+			this.tumbleTime += dt;
+
+			if ( this.grounded && this.sphereVel.y < 0.5 && this.tumbleTime > 0.25 ) {
+
+				this.tumbling = false;
+				this.tumble.set( 0, 0, 0 );
+
+			} else {
+
+				this.container.rotateX( this.tumble.x * dt );
+				this.container.rotateZ( this.tumble.z * dt );
+
+			}
+
+		}
+
 		_tmpVec.set( 0, 1, 0 ).applyQuaternion( this.container.quaternion );
+		this.flipped = ! this.tumbling && _tmpVec.y <= 0.5;
 
-		if ( _tmpVec.y > 0.5 ) {
+		if ( _tmpVec.y > 0.5 && ! this.tumbling ) {
 
-			const targetQuat = this.alignWithY( this.container.quaternion, _up );
-			this.container.quaternion.slerp( targetQuat, 1 - Math.pow( 0.8, dt * 60 ) );
+			// Sit on the slope; in the air, hold the nose along the flight path
+			if ( this.grounded ) {
+
+				const targetQuat = this.alignWithY( this.container.quaternion, this.groundNormal );
+				this.container.quaternion.slerp( targetQuat, 1 - Math.pow( 0.8, dt * 60 ) );
+
+			} else {
+
+				_forward.set( 0, 0, 1 ).applyQuaternion( this.container.quaternion );
+				_forward.y = 0;
+				_forward.normalize();
+				const v = this.sphereVel;
+				const pitch = THREE.MathUtils.clamp( Math.atan2( v.y, Math.max( 0.5, Math.hypot( v.x, v.z ) ) ), - 0.45, 0.45 );
+				_airUp.set( 0, Math.cos( pitch ), 0 ).addScaledVector( _forward, - Math.sin( pitch ) );
+				const targetQuat = this.alignWithY( this.container.quaternion, _airUp );
+				this.container.quaternion.slerp( targetQuat, 1 - Math.exp( - 3 * dt ) );
+
+			}
 
 		}
 
 		this.linearSpeed *= Math.max( 0, 1 - LINEAR_DAMP * dt );
 
-		if ( this.rigidBody ) {
+		if ( this.rigidBody && this.grounded ) {
 
 			_forward.set( 0, 0, 1 ).applyQuaternion( this.container.quaternion );
 			_forward.y = 0;
@@ -217,6 +302,10 @@ export class Vehicle {
 				angvel[ 1 ],
 				angvel[ 2 ] + _right.z * drive
 			] );
+
+		}
+
+		if ( this.rigidBody ) {
 
 			const pos = this.rigidBody.position;
 			this.spherePos.set( pos[ 0 ], pos[ 1 ], pos[ 2 ] );
@@ -252,6 +341,16 @@ export class Vehicle {
 
 		}
 
+		// A landing squashes the body for a moment
+		if ( this.grounded && ! this.wasGrounded && this.sphereVel.y < - 2 && this.bodyNode ) {
+
+			this.landing = - this.sphereVel.y;
+			this.bodyNode.position.y -= Math.min( 0.25, this.landing * 0.03 );
+
+		}
+
+		this.wasGrounded = this.grounded;
+
 		this.updateBody( dt );
 		this.updateWheels( dt );
 
@@ -286,6 +385,10 @@ export class Vehicle {
 		this.angularSpeed = 0;
 		this.acceleration = 0;
 		this.spin = 0;
+		this.controlLoss = 0;
+		this.tumbling = false;
+		this.tumble.set( 0, 0, 0 );
+		this.flipped = false;
 		this.container.quaternion.setFromAxisAngle( _up, angle );
 		this.resets ++;
 
@@ -308,17 +411,25 @@ export class Vehicle {
 
 		this.bodyNode.rotation.x = lerpAngle(
 			this.bodyNode.rotation.x,
-			-( this.linearSpeed - this.acceleration ) / 6,
+			-( this.linearSpeed - this.acceleration ) / 6 * this.wobble,
 			dt * 10
 		);
 
 		this.bodyNode.rotation.z = lerpAngle(
 			this.bodyNode.rotation.z,
-			-( this.inputX / 5 ) * this.linearSpeed,
+			-( this.inputX / 5 ) * this.linearSpeed * this.wobble,
 			dt * 5
 		);
 
 		this.bodyNode.position.y = THREE.MathUtils.lerp( this.bodyNode.position.y, this.bodyY, dt * 5 );
+
+		// Juddering over the kerbs
+		if ( this.judder > 0 ) {
+
+			this.bodyNode.rotation.x += ( Math.random() - 0.5 ) * 0.04 * this.judder;
+			this.bodyNode.rotation.z += ( Math.random() - 0.5 ) * 0.05 * this.judder;
+
+		}
 
 	}
 

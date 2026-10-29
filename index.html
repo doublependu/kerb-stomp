@@ -65,6 +65,27 @@
 		body:not([data-state="playing"]) #editor-link,
 		body:not([data-state="playing"]) #lap-timer,
 		body:not([data-state="playing"]) #countdown { visibility: hidden; }
+		/* The fly-over before a race: a title card instead of the HUD */
+		#flyover-card {
+			position: absolute;
+			left: 50%;
+			bottom: calc(14% + var(--safe-bottom));
+			transform: translateX(-50%);
+			z-index: 15;
+			width: min(560px, calc(100% - 32px));
+			text-align: center;
+			color: #fff;
+			font: 400 14px/1.4 var(--font);
+			text-shadow: 0 2px 12px rgba(0,0,0,0.55);
+			pointer-events: none;
+			opacity: 0;
+			transition: opacity 0.4s;
+		}
+		#flyover-card h2 { margin: 0; font: italic 900 clamp(30px, 7vw, 52px)/1 var(--font); text-transform: uppercase; letter-spacing: -0.01em; }
+		#flyover-card p { margin: 6px 0 0; opacity: 0.9; }
+		#flyover-card .skip { margin-top: 14px; font-size: 12px; opacity: 0.7; }
+		body[data-flyover] #flyover-card { opacity: 1; }
+		body[data-flyover] #lap-timer, body[data-flyover] #countdown, body[data-flyover] #editor-link { visibility: hidden; }
 		/* The right thumb pad sits in that corner; the pause menu has the link */
 		@media (hover: none) and (pointer: coarse) { #editor-link { display: none; } }
 
@@ -188,6 +209,8 @@
 		.results { list-style: none; margin: 0 0 16px; padding: 0; text-align: left; font-variant-numeric: tabular-nums; }
 		.results li { display: grid; grid-template-columns: 2.2em 1fr auto; gap: 8px; align-items: baseline; padding: 6px 8px; border-radius: 8px; }
 		.results li.you { background: rgba(255,200,61,0.18); }
+		.results li.winner { box-shadow: inset 0 0 0 1px rgba(245,194,66,0.7); }
+		.results .medal, .chips .medal { vertical-align: -3px; }
 		.results .pos { font-weight: 800; font-style: italic; }
 		.results .time { opacity: 0.8; font-size: 13px; }
 		.results small { opacity: 0.55; margin-left: 6px; }
@@ -278,7 +301,7 @@
 				</div>
 				<div class="view-cars">
 					<h2>Choose your car</h2>
-					<p class="setting-note">Every car drives the same; bigger ones shove harder and are harder to push around.</p>
+					<p class="setting-note">Light cars pick up speed quickly but get knocked about; heavy ones keep their momentum and shove the rest aside. All have the same top speed.</p>
 					<div class="car-grid" id="car-grid"></div>
 					<button id="cars-back">Back</button>
 				</div>
@@ -345,6 +368,7 @@
 		<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
 	</button>
 	<a id="editor-link" class="corner-link editor-link" href="editor.html">Create new track</a>
+	<div id="flyover-card" aria-live="polite"><h2></h2><p class="inspired"></p><p class="laps"></p><p class="skip"><span class="key-only">Press any key to skip</span><span class="touch-only">Tap to skip</span></p></div>
 	<div id="version">%VITE_APP_VERSION%</div>
 	<script type="module" src="js/main.js"></script>
 </body>

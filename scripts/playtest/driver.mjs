@@ -483,8 +483,9 @@ export async function drive( page, driver, { laps = 3, timeout = 120, until = nu
 		}
 
 		// Through a race countdown the bot just holds what start() pressed:
-		// the car can't move yet, which would read as stuck
-		if ( state.screen === 'playing' && state.phase !== 'countdown' ) {
+		// the car can't move yet, which would read as stuck. Nor can it while
+		// it's off the track waiting for the wand, or being carried back.
+		if ( state.screen === 'playing' && state.phase !== 'countdown' && ! state.carried && ! state.offTrack ) {
 
 			const proj = await driver.update( history );
 			lateral.push( Math.abs( proj.lateral ) );

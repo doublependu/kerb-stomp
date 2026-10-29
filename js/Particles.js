@@ -13,7 +13,8 @@ const _brPos = new THREE.Vector3();
 
 export class SmokeTrails {
 
-	constructor( scene ) {
+	// color: grey tyre smoke, or brown gravel dust
+	constructor( scene, { color = 0x5E5F6B } = {} ) {
 
 		const positions = new Float32Array( POOL_SIZE * 3 );
 		const opacities = new Float32Array( POOL_SIZE );
@@ -37,7 +38,7 @@ export class SmokeTrails {
 
 		const material = new THREE.PointsMaterial( {
 			map,
-			color: 0x5E5F6B,
+			color,
 			size: 1,
 			sizeAttenuation: true,
 			transparent: true,
@@ -106,6 +107,25 @@ export class SmokeTrails {
 
 			if ( bl ) this.emitAt( bl.x, roadY, bl.z );
 			if ( br ) this.emitAt( br.x, roadY, br.z );
+
+		}
+
+		this.emitted = true;
+
+	}
+
+	// Gravel dust kicked up from a car's rear wheels (call per car, per step)
+	dust( vehicle, speed ) {
+
+		if ( speed < 3 || Math.random() > speed / 25 ) return;
+
+		const roadY = vehicle.container.position.y + 0.05;
+
+		for ( const wheel of [ vehicle.wheelBL, vehicle.wheelBR ] ) {
+
+			if ( ! wheel ) continue;
+			wheel.getWorldPosition( _blPos );
+			this.emitAt( _blPos.x, roadY, _blPos.z );
 
 		}
 

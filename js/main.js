@@ -6,25 +6,32 @@ import { MAX_SPEED } from './Vehicle.js';
 import { Camera } from './Camera.js';
 import { Controls } from './Controls.js';
 import { buildTrack, computeTrackBounds, encodeCells } from './Track.js';
-import { centerline } from './TrackPath.js';
-import { resolveTrack, rememberTrack } from './Tracks.js';
-import { Race, STEP } from './Race.js';
+import { resolveTrack, rememberTrack, trackLine } from './Tracks.js';
+import { TrackShape } from './TrackShape.js';
+import { bendTrack } from './Bend.js';
+import { Race, STEP, SURFACE } from './Race.js';
 import { AIDriver, rng } from './AIDriver.js';
-import { planField } from './Difficulty.js';
+import { planField, FIRST_RACE } from './Difficulty.js';
 import { CARS, getCar } from './CarList.js';
 import { SmokeTrails } from './Particles.js';
 import { DriftMarks } from './DriftMarks.js';
 import { GameAudio } from './Audio.js';
 import { loadBest, saveBest } from './LapTimer.js';
 import { Hud } from './Hud.js';
-import { ColorMapGLTFLoader, colormapLoaded } from './Loader.js';
+import { ColorMapGLTFLoader, colormapLoaded, getColormap } from './Loader.js';
+import { planScenery, sceneryPads, boardMesh, sceneryModels, buildScenery } from './Scenery.js';
+import { SCENERY } from './SceneryList.js';
 import { MODEL_URLS } from './Assets.js';
 import { PRESETS, detectTier, loadSetting, saveSetting, loadAutoTier, saveAutoTier, lowerTier, FrameMonitor } from './Quality.js';
 import { Shell, lockViewport } from './Shell.js';
-import { Settings } from './Settings.js';
+import { Settings, saveMedal } from './Settings.js';
 import { SunShadow } from './SunShadow.js';
 import { setLambert } from './Materials.js';
 import { Debris } from './Debris.js';
+import { Wand } from './Wand.js';
+import { Occluders, splitArch } from './Occluders.js';
+import { Flyover } from './Flyover.js';
+import { Podium, badgeCount } from './Podium.js';
 
 const params = new URLSearchParams( window.location.search );
 
@@ -99,7 +106,7 @@ function loadModel( name, onProgress ) {
 				if ( car ) gltf.scene.scale.setScalar( 0.5 );
 
 				// Models are only drawable once their kit's colormap is in
-				const kit = car ? car.kit : name === 'debris' ? 'cars' : 'starter';
+				const kit = car ? car.kit : name.includes( '/' ) ? name.split( '/' )[ 0 ] : name === 'debris' ? 'cars' : 'starter';
 				colormapLoaded( kit ).then( () => resolve( gltf.scene ) );
 
 			}, ( e ) => {
@@ -119,6 +126,8 @@ function loadModel( name, onProgress ) {
 const TRACK_MODELS = [
 	'track-straight', 'track-corner', 'track-bump', 'track-finish',
 	'decoration-empty', 'decoration-forest', 'decoration-tents',
+	// Gravel pieces, for tracks with unsealed road
+	...( track.unsealed ? [ 'track-straight-gravel', 'track-corner-gravel' ] : [] ),
 ];
 
 // Everything the first frame needs: the track and the player's car. The
@@ -297,25 +306,48 @@ async function init() {
 	scene.fog.near = fogNear + cam.extraDistance;
 	scene.fog.far = fogFar + cam.extraDistance;
 
-	const trackGroups = buildTrack( scene, models, classic ? null : track.cells, PLAYTEST && params.has( 'chunk' ) ? { chunk: Number( params.get( 'chunk' ) ) } : {} );
+	// The finish arch can fade when it hides the car (Occluders)
+	splitArch( models[ 'track-finish' ] );
+
+	const line = trackLine( track );
+	const shape = new TrackShape( track, line );
+	performance.mark( 'kerb:shape' );
+
+	// Scenery: planned now (Track.js leaves those cells to it, with ground
+	// pads in the zone's colours and the corner boards), the buildings
+	// themselves once their models arrive after the game is interactive
+	const scenery = planScenery( shape, track );
+	performance.mark( 'kerb:plan' );
+	let pieceMaterial = null;
+	models[ 'track-straight' ].traverse( ( child ) => pieceMaterial = pieceMaterial || ( child.isMesh ? child.material : null ) );
+
+	const chunk = PLAYTEST && params.has( 'chunk' ) ? { chunk: Number( params.get( 'chunk' ) ) } : {};
+	const bent = shape.hilly ? bendTrack( models, shape ) : null;
+	performance.mark( 'kerb:bend' );
+	const trackGroups = buildTrack( scene, models, classic ? null : track.cells, { ...chunk, shape, bent, reserved: scenery.cells } );
+
+	for ( const mesh of [ sceneryPads( scenery, pieceMaterial ), boardMesh( scenery, pieceMaterial ) ] ) if ( mesh ) scene.add( mesh );
 	performance.mark( 'kerb:track' );
+
+	// Shadows reach the hillside and anything standing on it
+	sun.rise = shape.maxHeight + 8;
+	sun.fit( cam.footprint );
 
 	// The simulation, with the player's car on the start line
 
-	const line = centerline( track.cells );
-	const race = new Race( { cells: track.cells, line, classic, ai: track.ai } );
+	const race = new Race( { cells: track.cells, line, shape, classic, ai: track.ai } );
 	const player = race.addCar( getCar( settings.car ), models[ settings.car ], { player: true, name: 'You' } );
 	scene.add( player.vehicle.container );
 
 	// Probes (grid density scales with the tier; low skips the bake and relies
-	// on the hemisphere light)
+	// on the hemisphere light). Baked once the scenery is in, behind the setup
+	// screen; until then the hemisphere light does, as on low.
 
-	if ( boot.probes > 0 ) {
+	function bakeProbes() {
 
-		shell.setProgress( 0.88, 'Baking lighting…' );
-		await nextPaint();
+		if ( boot.probes <= 0 || probes ) return;
 
-		const probeHeight = 6;
+		const probeHeight = 6 + shape.maxHeight;
 		probes = new LightProbeGrid(
 			hw * 2, probeHeight, hd * 2,
 			Math.max( 4 * boot.probes, Math.round( hw / 4 * boot.probes ) ),
@@ -325,9 +357,22 @@ async function init() {
 		probes.position.set( bounds.centerX, probeHeight / 2, bounds.centerZ );
 		probes.bake( renderer, scene, { cubemapSize: boot.probeCubemapSize, near: 0.1, far: groundSize } );
 		scene.add( probes );
+		probes.visible = preset.probes > 0;
 		performance.mark( 'kerb:probes' );
 
 	}
+
+	// The magic wand shares the track's colormap material
+	const wand = new Wand( scene, pieceMaterial );
+
+	const podium = new Podium( { shadows: tier !== 'low' } );
+
+	const occluders = new Occluders();
+	trackGroups.trackPieceGroup.traverse( ( child ) => {
+
+		if ( child.isMesh && ( child.name === 'arch' || child === trackGroups.bridge || child === trackGroups.arch ) ) occluders.add( child );
+
+	} );
 
 	setLambert( scene, preset.lambert );
 
@@ -335,6 +380,7 @@ async function init() {
 	const hud = new Hud();
 
 	const particles = new SmokeTrails( scene );
+	const dust = new SmokeTrails( scene, { color: 0xb88a5e } );
 	debris = new Debris( scene, tier === 'low' ? 6 : 14 );
 	debris.lambert = preset.lambert;
 	const driftMarks = new DriftMarks( scene, trackKey );
@@ -392,6 +438,13 @@ async function init() {
 
 	};
 
+	race.events.onCarry = ( car ) => {
+
+		const d = car.vehicle.container.position.distanceTo( player.vehicle.container.position );
+		audio.chime( car.player ? 1 : 0.6 / ( 1 + d / 10 ) );
+
+	};
+
 	race.events.onLap = ( car ) => {
 
 		if ( ! car.player ) return;
@@ -428,6 +481,18 @@ async function init() {
 	let fieldToken = 0;
 	let fieldDirty = true;
 
+	// "Getting ready…" on the Race button while the opponents' cars or the
+	// scenery are still loading
+	const loading = new Set();
+
+	function setBusy( what, busy ) {
+
+		if ( busy ) loading.add( what );
+		else loading.delete( what );
+		shell.setBusy( loading.size > 0 );
+
+	}
+
 	function npcCount() {
 
 		return track.raceable ? settings.npcs : 0;
@@ -445,7 +510,7 @@ async function init() {
 		const pool = CARS.filter( ( c ) => c.id !== settings.car );
 		const defs = plan.map( () => pool.splice( Math.floor( random() * pool.length ), 1 )[ 0 ] );
 
-		shell.setBusy( count > 0 );
+		setBusy( 'field', count > 0 );
 		const loaded = await Promise.all( defs.map( ( def ) => loadModel( def.id ) ) );
 		if ( token !== fieldToken ) return false;
 
@@ -469,7 +534,7 @@ async function init() {
 		} );
 
 		fieldDirty = false;
-		shell.setBusy( false );
+		setBusy( 'field', false );
 		return true;
 
 	}
@@ -489,7 +554,7 @@ async function init() {
 		}
 
 		driftMarks.lift( player.vehicle );
-		race.aimField( bestLap ?? track.par, bestLap !== null );
+		race.aimField( bestLap ?? track.par * FIRST_RACE, bestLap !== null );
 
 		if ( field && field.length ) race.setup( 'race', [ ...field, player ], track.laps );
 		else race.setup( 'timetrial' );
@@ -510,6 +575,9 @@ async function init() {
 	const _forward = new THREE.Vector3();
 	const _camLead = new THREE.Vector3();
 	const _camTarget = new THREE.Vector3();
+	const _chasePosition = new THREE.Vector3();
+	const _chaseLook = new THREE.Vector3();
+	const _flyLook = new THREE.Vector3();
 
 	function snapCamera() {
 
@@ -569,20 +637,93 @@ async function init() {
 	}
 
 	let starting = false;
+	let sceneryReady = null;
 
-	async function go() {
+	// The fly-over before a race from the setup screen (not "Race again",
+	// not with reduced motion). A fresh key, tap or button skips it.
+	let flyover = null;
+	let skipFrom = 0;
+	const reducedMotion = window.matchMedia( '(prefers-reduced-motion: reduce)' );
+	const card = document.getElementById( 'flyover-card' );
+
+	function startFlyover() {
+
+		flyover = new Flyover( line, bounds );
+		skipFrom = performance.now() + 300;
+		card.querySelector( 'h2' ).textContent = track.name;
+		card.querySelector( '.inspired' ).textContent = track.inspiredBy ? 'Inspired by ' + track.inspiredBy : '';
+		card.querySelector( '.laps' ).textContent = race.laps + ( race.laps === 1 ? ' lap' : ' laps' ) + ' · ' + race.cars.length + ' cars';
+		document.body.dataset.flyover = '';
+
+		// See the whole track: no fog, a far horizon
+		scene.fog.near = 1e4;
+		scene.fog.far = 2e4;
+		cam.camera.far = 600;
+		cam.camera.updateProjectionMatrix();
+
+	}
+
+	function endFlyover() {
+
+		flyover = null;
+		delete document.body.dataset.flyover;
+		viewWidth = 0;
+		resize(); // the chase camera's fog and far plane again
+		frameMonitor.reset();
+		warmupFrames = 0;
+		race.start();
+
+	}
+
+	function skipFlyover( e ) {
+
+		if ( ! flyover || performance.now() < skipFrom || shell.state !== 'playing' ) return;
+		if ( e && ( e.repeat || e.code === 'Escape' || e.code === 'KeyP' ) ) return;
+		flyover.skip();
+
+	}
+
+	window.addEventListener( 'keydown', skipFlyover );
+	window.addEventListener( 'pointerdown', skipFlyover );
+
+	async function loadScenery() {
+
+		setBusy( 'scenery', true );
+
+		const ids = sceneryModels( scenery );
+		const loaded = await Promise.all( ids.map( ( id ) => loadModel( id ).catch( () => null ) ) );
+		const variations = track.variations || {};
+		const kits = new Set( ids.map( ( id ) => SCENERY[ id ].kit ) );
+		await Promise.all( [ ...kits ].map( ( kit ) => colormapLoaded( variations[ kit ] ? kit + '-' + variations[ kit ] : kit ) ) );
+
+		const group = buildScenery( scenery, Object.fromEntries( ids.map( ( id, i ) => [ id, loaded[ i ] ] ) ), { variations, baseMaterial: pieceMaterial, colormap: getColormap } );
+		setLambert( group, preset.lambert );
+		scene.add( group );
+		trackGroups.sceneryGroup = group;
+		performance.mark( 'kerb:scenery' );
+
+		bakeProbes();
+		needsRender = true;
+		setBusy( 'scenery', false );
+
+	}
+
+	async function go( { again = false } = {} ) {
 
 		if ( starting ) return;
 		starting = true;
 
+		await sceneryReady;
 		await refreshField();
 		starting = false;
+		podium.hide();
 
 		// Keys stay held: W both starts and drives, as it always has
 		lastCountdown = null;
 		wallImpacts = 0;
 		maxWallImpact = 0;
-		race.start();
+		if ( race.mode === 'race' && ! again && ! reducedMotion.matches && ! params.has( 'noflyover' ) ) startFlyover();
+		else race.start();
 		audio.setPaused( false );
 		shell.play();
 		warmupFrames = 0;
@@ -591,14 +732,15 @@ async function init() {
 
 	game = {
 
-		start: go,
-		restart: go,
+		start: () => go(),
+		restart: () => go( { again: true } ),
 		pause,
 		resume,
 
 		setup() {
 
 			audio.setPaused( true );
+			podium.hide();
 			shell.setup();
 			refreshField();
 
@@ -626,6 +768,7 @@ async function init() {
 			if ( settings.car !== id ) return;
 
 			player.def = def;
+			player.vehicle.setMass( def.mass ?? 1 );
 			player.vehicle.init( model, def.bodyY );
 			setLambert( player.vehicle.container, preset.lambert );
 
@@ -666,7 +809,7 @@ async function init() {
 		resetCar() {
 
 			if ( shell.state === 'paused' ) resume();
-			race.respawn( player );
+			race.respawn( player, { inPlace: true } );
 			driftMarks.lift( player.vehicle );
 
 		},
@@ -682,6 +825,17 @@ async function init() {
 	} );
 
 	window.addEventListener( 'blur', pause );
+
+	// Where the podium shows: beside the results panel on wide screens, above
+	// it on tall ones
+	function freeArea() {
+
+		const panel = document.querySelector( '#shell .panel' ).getBoundingClientRect();
+		if ( panel.right < viewWidth * 0.62 ) return { x: panel.right, y: 0, width: viewWidth - panel.right, height: viewHeight };
+		if ( panel.top > viewHeight * 0.3 ) return { x: 0, y: 0, width: viewWidth, height: panel.top };
+		return { x: 0, y: 0, width: viewWidth, height: viewHeight };
+
+	}
 
 	// Auto quality: if the device can't hold ~45fps once driving, step down a
 	// tier (live knobs only) and remember it for the next load.
@@ -735,12 +889,14 @@ async function init() {
 		for ( const car of race.cars ) {
 
 			particles.emit( car.vehicle );
+			if ( car.gravel ) dust.dust( car.vehicle, Math.hypot( car.vehicle.sphereVel.x, car.vehicle.sphereVel.z ) );
 			if ( car.player ) driftMarks.update( STEP, car.vehicle );
 			else npcMarks.update( STEP, car.vehicle );
 
 		}
 
 		particles.update( STEP );
+		dust.update( STEP );
 
 		// 3 · 2 · 1 · GO
 		if ( race.phase === 'countdown' ) {
@@ -779,8 +935,8 @@ async function init() {
 			container.position.lerpVectors( car.prevPosition, car.simPosition, alpha );
 			container.quaternion.slerpQuaternions( car.prevQuaternion, car.simQuaternion, alpha );
 
-			// Respawned cars blink while they can't be hit
-			container.visible = ! ( car.ghost > 0 && Math.floor( car.ghost * 10 ) % 2 );
+			// Respawned cars blink while they can't be hit (not while carried)
+			container.visible = ! ( ! car.carry && car.ghost > 0 && Math.floor( car.ghost * 10 ) % 2 );
 
 		}
 
@@ -790,6 +946,17 @@ async function init() {
 		_camLead.set( 0, 0, 1 ).applyQuaternion( container.quaternion ).multiplyScalar( Math.sqrt( mv.x * mv.x + mv.z * mv.z ) );
 		_camTarget.copy( container.position ).y += 0.5;
 		cam.update( frameDt, _camTarget, _camLead );
+
+		if ( flyover ) {
+
+			flyover.update( frameDt );
+			_chasePosition.copy( cam.camera.position );
+			_chaseLook.copy( cam.lookPoint );
+			flyover.pose( flyover.t, _chasePosition, _chaseLook, cam.camera.position, _flyLook );
+			cam.camera.lookAt( _flyLook );
+			if ( flyover.done ) endFlyover();
+
+		}
 
 		// A jolt on hard hits
 		if ( shake > 0.005 ) {
@@ -802,10 +969,25 @@ async function init() {
 
 		sun.update( cam.lookPoint );
 		debris.update( frameDt );
+		wand.update( frameDt, race.cars );
+		occluders.update( frameDt, cam.camera, _camTarget );
 		audio.update( frameDt, vehicle.linearSpeed / MAX_SPEED, vehicle.inputZ, vehicle.driftIntensity );
+		const speed = Math.hypot( vehicle.sphereVel.x, vehicle.sphereVel.z );
+		audio.setSurface( player.kerb, player.gravel, speed );
+		controls.buzz( player.kerb * Math.min( 1, speed / 8 ), race.time );
 		hud.update( race, bestLap );
 
-		renderer.render( scene, cam.camera );
+		if ( podium.active ) {
+
+			podium.update( frameDt );
+			podium.frame( viewWidth, viewHeight, freeArea() );
+			renderer.render( podium.scene, podium.camera );
+
+		} else {
+
+			renderer.render( scene, cam.camera );
+
+		}
 
 		for ( const car of race.cars ) {
 
@@ -850,12 +1032,14 @@ async function init() {
 
 		if ( shell.state === 'playing' || shell.state === 'finished' ) {
 
-			if ( shell.state === 'playing' ) {
+			if ( shell.state === 'playing' && ! flyover ) {
 
 				adaptQuality( frameDt );
 				frameStats.push( frameDt );
 
 			}
+
+			if ( flyover && input.anyButton ) skipFlyover();
 
 			for ( let i = 0; i < VIRTUAL_FRAMES; i ++ ) frame( frameDt / VIRTUAL_FRAMES, input );
 
@@ -867,7 +1051,12 @@ async function init() {
 			if ( resultsDue || ( shell.state === 'finished' && ( resultsTimer -= frameDt ) <= 0 ) ) {
 
 				shell.showResults( race );
+				podium.show( race );
 				resultsTimer = 0.5;
+
+				// A medal for the player, remembered per track
+				const place = race.position( player );
+				if ( player.finished && place <= badgeCount( race.cars.length ) ) saveMedal( track.id, place );
 
 			}
 
@@ -894,7 +1083,11 @@ async function init() {
 		window.__kerb = {
 			three: { THREE, scene, renderer, camera: cam.camera, dirLight, trackGroups },
 			race,
+			occluders,
+			podium,
+			surface: SURFACE,
 			cells: track.cells,
+			line: { points: line.points, closed: line.closed },
 			spawn: race.spawn,
 			// World point → normalised device coords, to check what's on screen
 			project( x, y, z ) {
@@ -916,7 +1109,7 @@ async function init() {
 
 				} else {
 
-					const group = { decorations: trackGroups.decoGroup, track: trackGroups.trackPieceGroup }[ part ];
+					const group = { decorations: trackGroups.decoGroup, track: trackGroups.trackPieceGroup, scenery: trackGroups.sceneryGroup }[ part ];
 					if ( group ) group.visible = visible;
 
 				}
@@ -953,6 +1146,9 @@ async function init() {
 				return {
 					t: performance.now(),
 					screen: shell.state,
+					flyover: Boolean( flyover ),
+					carried: Boolean( player.carry ),
+					offTrack: player.outTime > 0,
 					track: track.id,
 					car: settings.car,
 					touch: settings.touch,
@@ -1029,7 +1225,8 @@ async function init() {
 
 	// The setup screen
 
-	shell.buildPickers( track, encodeCells( track.cells ) );
+	// The editor has no hills or crossings: "Create new track" there instead
+	shell.buildPickers( track, track.heights ? null : encodeCells( track.cells ) );
 	shell.setCar( settings.car );
 	shell.setNpcs( settings.npcs, track.raceable );
 	shell.setTouch( settings.touch );
@@ -1048,8 +1245,9 @@ async function init() {
 
 	setTimeout( () => audio.init( cam.camera, player.vehicle.container, scene ), 0 );
 
-	// Opponents (and crash debris) load in the background behind the setup
-	// screen
+	// Scenery, opponents and crash debris load in the background behind the
+	// setup screen; the light probes bake once the scenery is in
+	sceneryReady = loadScenery();
 	refreshField();
 	loadModel( 'debris' ).then( ( model ) => debris.setModel( model ) ).catch( () => {} );
 

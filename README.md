@@ -1,6 +1,6 @@
 # Kerb Stomp
 
-A tiny racer in the browser. Pick one of 29 Kenney cars and race up to eight computer drivers on four tracks, or drive alone against your best lap. Cars bump, shove and spin each other.
+A tiny racer in the browser. Pick one of 29 Kenney cars and race up to eight computer drivers on six tracks, or drive alone against your best lap. Cars bump, shove, spin and sometimes send each other flying.
 
 ## Playing
 
@@ -8,9 +8,12 @@ A tiny racer in the browser. Pick one of 29 Kenney cars and race up to eight com
 - **Keyboard:** WASD / arrow keys, R resets the car onto the track, Esc or P pauses. **Gamepad:** stick + triggers, Start pauses.
 - **Touch, joystick:** a fixed joystick low in the middle. Drag from its centre toward where to go; drag further to go faster.
 - **Touch, two thumbs:** slide the left pad to steer, the right pad up to accelerate and down to brake / reverse.
-- **Races:** 2–5 laps depending on the track, from a grid behind the line, after a 3-2-1 countdown. Opponents' pace is spread around your best lap on that track, so a few are quicker than you and most are slower, and they speed up as you do. In your first race on a track they start from an average player's pace and adjust to your laps as you go.
-- **Tracks:** Classic (the Starter Kit layout) and three loosely modelled on real circuits: Indianapolis (the oval's four left turns), Monza (its chicanes, Curva Grande, the Lesmos and Parabolica) and Monaco (Sainte Dévote, Casino, the hairpin, the tunnel, the pool and Rascasse). Pieces are 90° only, so they're squeezed approximations. Custom tracks come from the editor (`editor.html`, `?map=`).
-- **Cars:** all drive the same. Size is collision volume and mass: karts get pushed around, fire and garbage trucks do the pushing.
+- **Races:** 2–5 laps depending on the track. A short fly-over of the track first (any key or tap skips it), then a grid behind the line and a 3-2-1 countdown. Opponents' pace is spread around your best lap on that track, so about a third are quicker than you, leaning a little kinder to novices and harder on experts, and they speed up as you do. In your first race on a track they start from an average player's pace and adjust to your laps as you go.
+- **Results:** the winner turns on a podium. With 3 cars or fewer there's one badge, with more there are gold, silver and bronze; your best medal on each track shows in the track picker.
+- **Tracks:** Classic (the Starter Kit layout) and five loosely modelled on real circuits: Indianapolis (the oval's four left turns), Monza (its chicanes, Curva Grande, the Lesmos and Parabolica), Monaco (Sainte Dévote, Casino, the hairpin, the tunnel, the pool and Rascasse), Suzuka (a figure-8: the back straight crosses the Degner–Hairpin link on a bridge) and Bathurst (Mount Panorama: a climb, an unsealed cliff top, the drop down the Esses and the Hump on Conrod). Pieces are 90° only, so they're squeezed approximations. Each stretch of each track has its own scenery (a paddock, suburbs, an industrial estate, a village, forest) and every turn a landmark, chevrons and braking boards, so you can tell where you are. Custom tracks come from the editor (`editor.html`, `?map=`); it has no hills or crossings.
+- **Leaving the track:** off a cliff, over a wall, stuck, or upside down, a magic wand flies the car back to the road while the race goes on. R does it on purpose.
+- **Kerbs and gravel:** wheels on the rumble strip or the red-and-white kerb slow you down (the kerb more); gravel is slippery and slower.
+- **Cars:** all have the same top speed. Weight (light, medium, heavy) sets the rest: light cars pick up speed and stop quicker but get knocked about, heavy ones keep their momentum and knock others aside, spin them, or send them flying.
 
 
 ## Setup and run
@@ -57,7 +60,7 @@ The sun's shadow box follows the camera's view rather than covering the whole tr
 
 ## Models
 
-`models/src/` holds the original Kenney models: Starter Kit Racing (track, decorations, trucks) and Car Kit 3.1 in `models/src/cars/` (25 vehicles and debris parts). `npm run models` compresses them (meshopt, quantized) into `models/` and `models/cars/` and regenerates `js/CarList.js` from the cars' bounds; `npm run thumbs` re-renders the car picker's thumbnail sheet (`sprites/cars.webp`). The outputs are committed, so a build doesn't need either step.
+`models/src/` holds the original Kenney models: Starter Kit Racing (track, decorations, trucks), Car Kit 3.1 in `models/src/cars/` (25 vehicles and debris parts), and the scenery kits in `models/src/<kit>/` (City Kit Industrial, City Kit Suburban, Fantasy Town, Mini Forest, City Kit Roads, Racing Kit). `npm run kits` copies the scenery models the game uses from the kits' zips unpacked in `ref/`. `npm run models` compresses everything (meshopt, quantized) into `models/`, `models/cars/` and `models/<kit>/`, builds the gravel track pieces and the Fantasy Town house prefabs, bakes the Racing Kit's colours into a palette, and regenerates `js/CarList.js` (bounds and mass) and `js/SceneryList.js`. `npm run thumbs` re-renders the car picker's thumbnail sheet (`sprites/cars.webp`). The outputs are committed, so a build doesn't need any of these.
 
 ## Simulation
 
@@ -65,10 +68,14 @@ The race simulation (`js/Race.js`: physics, NPC drivers, car-to-car collisions, 
 
 ```bash
 npm run sim -- --calibrate   # NPC lap time by skill on each track
-npm run sim -- --soak        # 9 NPCs × 20 laps × every track: nobody gets stuck
+npm run sim -- --soak        # 9 NPCs × 20 laps × every track: nobody gets stuck (wand trips, launches)
 npm run sim -- --balance     # an AI stand-in for the player races the field twice, as in the game
-npm run tracks               # check and draw the built-in track layouts
+npm run sim -- --classes     # the same NPC in light, medium and heavy cars: lap times compared
+npm run sim -- --fit         # grip and braking for the NPCs' speed profile (js/RacingLine.js)
+npm run tracks               # check and draw the built-in tracks: gradients, crests and their take-off speeds
 ```
+
+`?tune` adds a panel of live knobs: car contact (spin and launch thresholds), handling by mass, kerb and gravel drag, NPC aggression.
 
 ## Testing
 
@@ -78,14 +85,14 @@ npm run playtest   # bots play through real keyboard/touch input and record vide
 npm run playtest -- --scenario desktop-keyboard,rotate-mid-race --laps 2 --no-record
 ```
 
-Playtest recordings and reports go to `playtests/` (gitignored). Scenarios: `desktop-keyboard`, `laptop-keyboard`, `phone-portrait-touch`, `phone-landscape-touch` (joystick), `phone-portrait-pads`, `phone-landscape-pads`, `tracks`, `race`, `race-flow`, `custom-tracks`, `rotate-mid-race`, `pause-resume`, `zoom-lock`, `offline-file`, `framerate`. The bots read the game's state through `window.__kerb` (present with `?playtest` or in dev) and never inject into it.
+Playtest recordings and reports go to `playtests/` (gitignored). Scenarios: `desktop-keyboard`, `laptop-keyboard`, `phone-portrait-touch`, `phone-landscape-touch` (joystick), `phone-portrait-pads`, `phone-landscape-pads`, `tracks`, `race`, `race-flow`, `flyover`, `cliff`, `podium`, `kerbs`, `custom-tracks`, `rotate-mid-race`, `pause-resume`, `zoom-lock`, `offline-file`, `framerate`. `?noflyover` skips the fly-over. The bots read the game's state through `window.__kerb` (present with `?playtest` or in dev) and never inject into it.
 
 `race` has keyboard bots race the NPCs, twice per skill (the first race sets the best lap the second is paced from): `npm run playtest -- --scenario race --race-tracks classic,monza --race-skills average --npcs 4`.
 
 ## Credits
 
-- Game assets by [Kenney](https://kenney.nl/) (CC0): [Starter Kit Racing](https://github.com/KenneyNL/Starter-Kit-Racing) and [Car Kit](https://kenney.nl/assets/car-kit)
-- Track layouts loosely inspired by the circuits at Indianapolis, Monza and Monaco
+- Game assets by [Kenney](https://kenney.nl/) (CC0): [Starter Kit Racing](https://github.com/KenneyNL/Starter-Kit-Racing), [Car Kit](https://kenney.nl/assets/car-kit), [City Kit Industrial](https://kenney.nl/assets/city-kit-industrial), [City Kit Suburban](https://kenney.nl/assets/city-kit-suburban), [City Kit Roads](https://kenney.nl/assets/city-kit-roads), [Fantasy Town Kit](https://kenney.nl/assets/fantasy-town-kit), [Mini Forest](https://kenney.nl/assets/mini-forest) and [Racing Kit](https://kenney.nl/assets/racing-kit)
+- Track layouts loosely inspired by the circuits at Indianapolis, Monza, Monaco, Suzuka and Mount Panorama, Bathurst
 - Physics engine: [crashcat](https://github.com/isaac-mason/crashcat)
 - Ported to JavaScript with [Claude](https://claude.ai/)
 - A JavaScript/Three.js port of [Kenney's Starter Kit Racing](https://github.com/KenneyNL/Starter-Kit-Racing).

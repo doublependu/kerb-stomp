@@ -69,3 +69,28 @@ export class Settings {
 	}
 
 }
+
+// Best medal won per track (1 gold, 2 silver, 3 bronze), for the picker
+export function loadMedals() {
+
+	try {
+
+		return JSON.parse( read( 'kerb.medals' ) || '{}' ) || {};
+
+	} catch {
+
+		return {};
+
+	}
+
+}
+
+export function saveMedal( trackId, place ) {
+
+	const medals = loadMedals();
+	if ( medals[ trackId ] && medals[ trackId ] <= place ) return medals;
+	medals[ trackId ] = place;
+	write( 'kerb.medals', JSON.stringify( medals ) );
+	return medals;
+
+}
