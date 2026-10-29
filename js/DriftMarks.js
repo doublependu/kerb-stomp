@@ -71,22 +71,24 @@ class DriftTrail {
 
 	}
 
-	track( wheel, groundY, intensity, emit ) {
+	// pen: where this wheel's mark left off (the trail itself, or a per-car
+	// pen when several cars share one trail)
+	track( wheel, groundY, intensity, emit, pen = this ) {
 
 		if ( ! wheel ) return;
 
 		wheel.getWorldPosition( _wheelWorld );
 		_wheelWorld.y = groundY;
 
-		if ( emit && this.active ) {
+		if ( emit && pen.active ) {
 
 			const alpha = THREE.MathUtils.clamp( ( intensity - INTENSITY_MIN ) * INV_INTENSITY_RANGE, 0, 1 );
-			this._writeSegment( this.prev, _wheelWorld, alpha, true );
+			this._writeSegment( pen.prev, _wheelWorld, alpha, true );
 
 		}
 
-		this.prev.copy( _wheelWorld );
-		this.active = emit;
+		pen.prev.copy( _wheelWorld );
+		pen.active = emit;
 
 	}
 
@@ -236,9 +238,11 @@ class DriftTrail {
 
 }
 
+// The player's marks persist per track; opponents' share one trail (shared:
+// true) that isn't saved.
 export class DriftMarks {
 
-	constructor( scene, trackId ) {
+	constructor( scene, trackId, { shared = false } = {} ) {
 
 		const material = new THREE.MeshBasicMaterial( {
 			color: 0x111111,
@@ -252,21 +256,44 @@ export class DriftMarks {
 			polygonOffsetUnits: - 4,
 		} );
 
-		this.trails = [
-			new DriftTrail( scene, material ),
-			new DriftTrail( scene, material ),
-		];
+		this.shared = shared;
 
-		this.storageKey = STORAGE_PREFIX + ( trackId || 'default' );
-		this._load();
+		if ( shared ) {
 
-		window.addEventListener( 'pagehide', () => this._save() );
+			this.trails = [ new DriftTrail( scene, material ) ];
+
+		} else {
+
+			this.trails = [
+				new DriftTrail( scene, material ),
+				new DriftTrail( scene, material ),
+			];
+
+			this.storageKey = STORAGE_PREFIX + ( trackId || 'default' );
+			this._load();
+
+			window.addEventListener( 'pagehide', () => this._save() );
+
+		}
 
 	}
 
 	update( dt, vehicle ) {
 
 		const emit = vehicle.driftIntensity > 0.5 && Math.abs( vehicle.linearSpeed ) > 0.15;
+
+		if ( this.shared ) {
+
+			if ( ! vehicle.driftPens ) vehicle.driftPens = [ { prev: new THREE.Vector3(), active: false }, { prev: new THREE.Vector3(), active: false } ];
+			const pens = vehicle.driftPens;
+			if ( ! emit && ! pens[ 0 ].active && ! pens[ 1 ].active ) return;
+
+			const groundY = vehicle.container.position.y + Y_OFFSET;
+			this.trails[ 0 ].track( vehicle.wheelBL, groundY, vehicle.driftIntensity, emit, pens[ 0 ] );
+			this.trails[ 0 ].track( vehicle.wheelBR, groundY, vehicle.driftIntensity, emit, pens[ 1 ] );
+			return;
+
+		}
 
 		if ( ! emit && ! this.trails[ 0 ].active && ! this.trails[ 1 ].active ) return;
 
@@ -275,6 +302,14 @@ export class DriftMarks {
 
 		this.trails[ 0 ].track( vehicle.wheelBL, groundY, intensity, emit );
 		this.trails[ 1 ].track( vehicle.wheelBR, groundY, intensity, emit );
+
+	}
+
+	// A car jumped (respawn, new race): don't draw a mark across the gap
+	lift( vehicle ) {
+
+		if ( vehicle.driftPens ) for ( const pen of vehicle.driftPens ) pen.active = false;
+		else if ( ! this.shared ) for ( const trail of this.trails ) trail.active = false;
 
 	}
 

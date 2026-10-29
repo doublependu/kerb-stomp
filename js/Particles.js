@@ -93,25 +93,39 @@ export class SmokeTrails {
 
 	}
 
-	update( dt, vehicle ) {
+	// Drift smoke from a car's rear wheels (call per car, per step)
+	emit( vehicle ) {
 
-		const shouldEmit = vehicle.driftIntensity > 0.7;
-		let aliveCount = 0;
+		if ( vehicle.driftIntensity <= 0.7 ) return;
 
-		if ( shouldEmit ) {
+		const roadY = vehicle.container.position.y + 0.05;
+		const bl = vehicle.wheelBL ? vehicle.wheelBL.getWorldPosition( _blPos ) : null;
+		const br = vehicle.wheelBR ? vehicle.wheelBR.getWorldPosition( _brPos ) : null;
 
-			const roadY = vehicle.container.position.y + 0.05;
-			const bl = vehicle.wheelBL ? vehicle.wheelBL.getWorldPosition( _blPos ) : null;
-			const br = vehicle.wheelBR ? vehicle.wheelBR.getWorldPosition( _brPos ) : null;
+		for ( let i = 0; i < PARTICLES_PER_EMIT; i ++ ) {
 
-			for ( let i = 0; i < PARTICLES_PER_EMIT; i ++ ) {
-
-				if ( bl ) this.emitAt( bl.x, roadY, bl.z );
-				if ( br ) this.emitAt( br.x, roadY, br.z );
-
-			}
+			if ( bl ) this.emitAt( bl.x, roadY, bl.z );
+			if ( br ) this.emitAt( br.x, roadY, br.z );
 
 		}
+
+		this.emitted = true;
+
+	}
+
+	// A burst where two cars hit
+	puff( x, y, z, count ) {
+
+		for ( let i = 0; i < count; i ++ ) this.emitAt( x, y, z );
+		this.emitted = true;
+
+	}
+
+	update( dt ) {
+
+		const shouldEmit = this.emitted;
+		this.emitted = false;
+		let aliveCount = 0;
 
 		const damping = 1 - dt;
 

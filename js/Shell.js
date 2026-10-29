@@ -1,15 +1,38 @@
-// Loading / start / pause / error overlay. The markup and its CSS live inline
-// in index.html so the loading screen paints before any script has arrived.
+// Loading / setup / pause / results / error overlay. The markup and its CSS
+// live inline in index.html so the loading screen paints before any script
+// has arrived.
+//
+// States: loading → ready (race setup, with a car picker view) → playing ⇄
+// paused, → finished (race results) → ready or playing again; error.
+
+import { CARS } from './CarList.js';
+import { TRACKS } from './Tracks.js';
+import { thumbStyle } from './CarThumbs.js';
+import { MAX_NPCS } from './Settings.js';
+import { formatTime } from './LapTimer.js';
+import { ordinal } from './Hud.js';
 
 const OFFLINE = import.meta.env.MODE === 'offline';
 const VERSION = import.meta.env.VITE_APP_VERSION;
 
 const QUALITY_LABELS = { auto: 'Auto', low: 'Low', medium: 'Medium', high: 'High' };
 
+// Size class from footprint area (it sets collision mass, CarCollisions.js)
+export function sizeLabel( car ) {
+
+	const area = car.length * car.width;
+	return area < 0.6 ? 'Small' : area < 1.05 ? 'Medium' : 'Large';
+
+}
+
 export class Shell {
 
-	constructor( { onStart, onPause, onResume, onQuality } ) {
+	// handlers: onStart, onPause, onResume, onQuality( setting ), onCar( id ),
+	// onNpcs( count ), onTouch( scheme ), onTrack( id ), onRestart, onSetup,
+	// onReset
+	constructor( handlers ) {
 
+		this.handlers = handlers;
 		this.el = document.getElementById( 'shell' );
 		this.state = 'loading';
 
@@ -19,52 +42,62 @@ export class Shell {
 		this.qualityNote = document.getElementById( 'quality-note' );
 		this.qualityButtons = this.el.querySelectorAll( '[data-quality]' );
 		this.reloadButton = document.getElementById( 'reload-btn' );
-
-		this.onStart = onStart;
+		this.startButton = document.getElementById( 'start-btn' );
+		this.setView( 'setup' );
 
 		this.setupLinks();
 
-		// Start: first key, tap or click anywhere on the overlay (links and
-		// buttons keep their own behaviour). The key event is not swallowed,
-		// so W / ↑ starts driving straight away. Pause keys live in the same
-		// listener so one Escape can't both start and pause.
+		// Keys: Enter / W / ↑ start from the setup screen (W keeps the old one-key
+		// start: the key isn't swallowed, so the car pulls away at once in
+		// time trial). Pause keys live in the same listener so one Escape
+		// can't both start and pause.
 
 		window.addEventListener( 'keydown', ( e ) => {
 
 			if ( e.repeat ) return;
 
 			const pauseKey = e.code === 'Escape' || e.code === 'KeyP';
+			const onButton = document.activeElement && document.activeElement.closest( 'button, a' );
+			const confirm = ( e.code === 'Enter' && ! onButton ) || e.code === 'KeyW' || e.code === 'ArrowUp';
 
 			if ( this.state === 'ready' ) {
 
-				if ( e.key === 'Shift' || e.key === 'Control' || e.key === 'Alt' || e.key === 'Meta' || e.key === 'Tab' ) return;
-				this.start();
+				if ( this.view === 'cars' ) {
+
+					if ( e.code === 'Escape' ) this.setView( 'setup' );
+
+				} else if ( confirm ) {
+
+					this.start();
+
+				}
 
 			} else if ( this.state === 'playing' && pauseKey ) {
 
-				onPause();
+				handlers.onPause();
 
 			} else if ( this.state === 'paused' && pauseKey ) {
 
-				onResume();
+				handlers.onResume();
+
+			} else if ( this.state === 'finished' && e.code === 'Enter' && ! onButton ) {
+
+				handlers.onRestart();
 
 			}
 
 		} );
 
-		this.el.addEventListener( 'pointerdown', ( e ) => {
-
-			if ( this.state !== 'ready' ) return;
-			if ( e.target.closest( 'a, button' ) ) return;
-			this.start();
-
-		} );
-
-		document.getElementById( 'resume-btn' ).addEventListener( 'click', () => onResume() );
+		this.startButton.addEventListener( 'click', () => this.start() );
+		document.getElementById( 'resume-btn' ).addEventListener( 'click', () => handlers.onResume() );
+		document.getElementById( 'reset-btn' ).addEventListener( 'click', () => handlers.onReset() );
+		document.getElementById( 'again-btn' ).addEventListener( 'click', () => handlers.onRestart() );
+		for ( const b of this.el.querySelectorAll( '.restart-btn' ) ) b.addEventListener( 'click', () => handlers.onRestart() );
+		for ( const b of this.el.querySelectorAll( '.setup-btn' ) ) b.addEventListener( 'click', () => handlers.onSetup() );
 
 		for ( const button of this.qualityButtons ) {
 
-			button.addEventListener( 'click', () => onQuality( button.dataset.quality ) );
+			button.addEventListener( 'click', () => handlers.onQuality( button.dataset.quality ) );
 
 		}
 
@@ -90,6 +123,27 @@ export class Shell {
 			fullscreen.hidden = true;
 
 		}
+
+		// Opponents steppers (setup and pause menu)
+		for ( const stepper of this.el.querySelectorAll( '.npc-stepper' ) ) {
+
+			stepper.addEventListener( 'click', ( e ) => {
+
+				const button = e.target.closest( '[data-step]' );
+				if ( button ) handlers.onNpcs( this.npcs + Number( button.dataset.step ) );
+
+			} );
+
+		}
+
+		for ( const button of this.el.querySelectorAll( '[data-touch]' ) ) {
+
+			button.addEventListener( 'click', () => handlers.onTouch( button.dataset.touch ) );
+
+		}
+
+		document.getElementById( 'car-btn' ).addEventListener( 'click', () => this.setView( 'cars' ) );
+		document.getElementById( 'cars-back' ).addEventListener( 'click', () => this.setView( 'setup' ) );
 
 	}
 
@@ -131,6 +185,124 @@ export class Shell {
 
 	}
 
+	// The pickers: tracks (with the custom one from ?map=, if any) and cars
+	buildPickers( track, editorMap ) {
+
+		const tracks = document.getElementById( 'track-picker' );
+		const list = track.custom ? [ ...TRACKS, track ] : TRACKS;
+
+		for ( const t of list ) {
+
+			const button = document.createElement( 'button' );
+			button.textContent = t.name;
+			button.title = t.inspiredBy ? 'Inspired by ' + t.inspiredBy : '';
+			button.classList.toggle( 'active', t.id === track.id );
+			button.setAttribute( 'aria-pressed', t.id === track.id );
+			if ( t.id !== track.id ) button.addEventListener( 'click', () => this.handlers.onTrack( t.id ) );
+			tracks.appendChild( button );
+
+		}
+
+		// "Edit this track" for built-in tracks too
+		if ( editorMap && ! OFFLINE ) {
+
+			for ( const link of document.querySelectorAll( '.editor-link' ) ) {
+
+				link.href = 'editor.html?map=' + editorMap;
+				link.textContent = 'Edit this track';
+
+			}
+
+		}
+
+		const grid = document.getElementById( 'car-grid' );
+
+		CARS.forEach( ( car, i ) => {
+
+			const button = document.createElement( 'button' );
+			button.className = 'car-tile';
+			button.dataset.car = car.id;
+			button.innerHTML = `<span class="thumb" style="${ thumbStyle( i, 76 ) }"></span>${ car.name }<small>${ sizeLabel( car ) }</small>`;
+			button.addEventListener( 'click', () => {
+
+				this.handlers.onCar( car.id );
+				this.setView( 'setup' );
+
+			} );
+			grid.appendChild( button );
+
+		} );
+
+		// Not raceable (a dead-end custom track): time trial only
+		if ( ! track.raceable ) for ( const el of this.el.querySelectorAll( '.npc-setting' ) ) el.hidden = true;
+
+	}
+
+	setView( view ) {
+
+		this.view = view;
+		this.el.dataset.view = view;
+
+		if ( view === 'cars' ) {
+
+			const active = this.el.querySelector( '.car-tile.active' );
+			if ( active ) active.focus( { preventScroll: true } );
+			active?.scrollIntoView( { block: 'nearest' } );
+
+		}
+
+	}
+
+	setCar( id ) {
+
+		const index = CARS.findIndex( ( c ) => c.id === id );
+		const car = CARS[ index ];
+		const button = document.getElementById( 'car-btn' );
+		button.querySelector( '.thumb' ).setAttribute( 'style', thumbStyle( index, 72 ) );
+		button.querySelector( '.car-name' ).textContent = car.name;
+		button.querySelector( '.car-size' ).textContent = sizeLabel( car ) + ' · ' + ( car.kit === 'starter' ? 'Starter Kit' : 'Car Kit' );
+
+		for ( const tile of this.el.querySelectorAll( '.car-tile' ) ) tile.classList.toggle( 'active', tile.dataset.car === id );
+
+	}
+
+	setNpcs( count, raceable ) {
+
+		this.npcs = count;
+		this.raceable = raceable;
+
+		for ( const stepper of this.el.querySelectorAll( '.npc-stepper' ) ) {
+
+			stepper.querySelector( 'output' ).textContent = count;
+			stepper.querySelector( '[data-step="-1"]' ).disabled = count <= 0;
+			stepper.querySelector( '[data-step="1"]' ).disabled = count >= MAX_NPCS;
+
+		}
+
+		this.startButton.textContent = count > 0 && raceable ? 'Race' : 'Drive';
+
+	}
+
+	setTouch( scheme ) {
+
+		document.body.dataset.touch = scheme;
+
+		for ( const button of this.el.querySelectorAll( '[data-touch]' ) ) {
+
+			button.classList.toggle( 'active', button.dataset.touch === scheme );
+			button.setAttribute( 'aria-pressed', button.dataset.touch === scheme );
+
+		}
+
+	}
+
+	// Waiting for opponents' models to arrive (a start meanwhile waits too)
+	setBusy( busy ) {
+
+		this.startButton.textContent = busy ? 'Getting ready…' : ( this.npcs > 0 && this.raceable ? 'Race' : 'Drive' );
+
+	}
+
 	setState( state ) {
 
 		this.state = state;
@@ -155,8 +327,15 @@ export class Shell {
 
 	start() {
 
+		this.handlers.onStart();
+
+	}
+
+	play() {
+
 		this.setState( 'playing' );
-		this.onStart();
+		this.setView( 'setup' );
+		if ( document.activeElement && document.activeElement.blur ) document.activeElement.blur();
 
 	}
 
@@ -170,6 +349,47 @@ export class Shell {
 	resume() {
 
 		this.setState( 'playing' );
+
+	}
+
+	setup() {
+
+		this.setState( 'ready' );
+		this.setView( 'setup' );
+
+	}
+
+	// Results, refreshed while the rest of the field finishes
+	showResults( race ) {
+
+		if ( this.state !== 'finished' ) {
+
+			this.setState( 'finished' );
+			document.getElementById( 'again-btn' ).focus( { preventScroll: true } );
+
+		}
+
+		const standings = race.standings();
+		const player = race.player;
+		const position = standings.indexOf( player ) + 1;
+		this.el.querySelector( '.result-title' ).textContent = position === 1 ? 'You won!' : `You finished ${ ordinal( position ) }`;
+
+		const winner = standings[ 0 ];
+		const rows = standings.map( ( car, i ) => {
+
+			let time;
+
+			if ( car.finished ) time = car === winner ? formatTime( car.finishTime ) : '+' + ( car.finishTime - winner.finishTime ).toFixed( 2 );
+			else time = race.phase === 'done' ? 'DNF' : 'racing…';
+
+			const best = car.counter.bestLap !== null ? `<small>best ${ formatTime( car.counter.bestLap ) }</small>` : '';
+			return `<li class="${ car === player ? 'you' : '' }"><span class="pos">${ i + 1 }</span><span>${ car === player ? 'You' : car.name }${ best }</span><span class="time">${ time }</span></li>`;
+
+		} );
+
+		const html = rows.join( '' );
+		const list = document.getElementById( 'results' );
+		if ( list.innerHTML !== html ) list.innerHTML = html;
 
 	}
 
@@ -212,6 +432,8 @@ export function lockViewport() {
 
 	document.addEventListener( 'touchmove', ( e ) => {
 
+		// Also fires for two thumbs on the pads; blocking the touch default
+		// doesn't stop their pointer events
 		if ( e.touches.length > 1 ) e.preventDefault();
 
 	}, { passive: false } );

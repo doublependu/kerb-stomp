@@ -12,10 +12,15 @@
 
 export const TIERS = [ 'low', 'medium', 'high' ];
 
+//
+// The shadow box follows the view (SunShadow.js) rather than spanning the
+// track, so 1024² on low is already sharper than the old 4096² was on large
+// tracks. Low also swaps in Lambert shading (Materials.js).
+
 export const PRESETS = {
-	low: { pixelRatio: 1, antialias: false, halfFloat: false, bloom: false, shadowMapSize: 1024, probes: 0, probeCubemapSize: 16 },
-	medium: { pixelRatio: 1.5, antialias: true, halfFloat: false, bloom: false, shadowMapSize: 2048, probes: 0.5, probeCubemapSize: 16 },
-	high: { pixelRatio: 2, antialias: true, halfFloat: true, bloom: true, shadowMapSize: 4096, probes: 1, probeCubemapSize: 32 },
+	low: { pixelRatio: 1, antialias: false, halfFloat: false, bloom: false, shadowMapSize: 1024, probes: 0, probeCubemapSize: 16, lambert: true },
+	medium: { pixelRatio: 1.5, antialias: true, halfFloat: false, bloom: false, shadowMapSize: 2048, probes: 0.5, probeCubemapSize: 16, lambert: false },
+	high: { pixelRatio: 2, antialias: true, halfFloat: true, bloom: true, shadowMapSize: 2048, probes: 1, probeCubemapSize: 32, lambert: false },
 };
 
 const SETTING_KEY = 'kerb.quality';

@@ -1,23 +1,39 @@
+// Keyboard, gamepad and touch input. update() returns one input object:
+//   { x, z, mode, pause, reset, anyButton }
+// mode 'car': x steers (−1 left … 1 right), z is throttle/brake (keyboard,
+// gamepad, touch pads). mode 'world': (x, z) is a world-space direction to
+// drive in, its length the speed (touch joystick).
+//
+// Touch has two schemes (Settings.touch):
+//   joystick: a fixed base low in the middle of the screen. Drag from its
+//             centre toward where to go; drag further to go faster.
+//   pads:     a left pad you slide sideways to steer and a right pad you
+//             slide up to accelerate, down to brake and reverse.
+
+const JOY_RANGE = 60; // px from the joystick's centre to full speed
+const JOY_DEAD = 0.15;
+const PAD_RANGE = 50; // px from a pad's centre to full deflection
+const PAD_DEAD = 0.08;
+
 export class Controls {
 
-	constructor() {
+	constructor( scheme = 'joystick' ) {
 
 		this.keys = {};
-		this.x = 0;
-		this.z = 0;
+		this.scheme = scheme;
 
-		// Touch state
-		this.touchActive = false;
-		this.touchDirX = 0;
-		this.touchDirY = 0;
-		this.steerPointerId = null;
-		this.steerStartX = 0;
-		this.steerStartY = 0;
-		this.cancelSteer = () => {};
+		// Touch state per role: 'joy', 'steer', 'throttle'
+		this.touches = {};
+		this.cancelTouches = () => {};
+		this.hasTouch = false;
 
-		// Gamepad edge state (Start pauses, any button dismisses the start screen)
+		// Gamepad / key edge state (Start pauses, any button dismisses the
+		// start screen, R resets the car)
 		this.prevStart = false;
 		this.prevAnyButton = false;
+		this.prevReset = false;
+
+		this.input = { x: 0, z: 0, mode: 'car', pause: false, reset: false, anyButton: false };
 
 		window.addEventListener( 'keydown', ( e ) => this.keys[ e.code ] = true );
 		window.addEventListener( 'keyup', ( e ) => this.keys[ e.code ] = false );
@@ -30,111 +46,191 @@ export class Controls {
 
 	}
 
+	setScheme( scheme ) {
+
+		this.cancelTouches();
+		this.scheme = scheme;
+		if ( this.ui ) this.ui.dataset.scheme = scheme;
+
+	}
+
 	setupTouchUI() {
 
 		if ( ! ( 'ontouchstart' in window ) ) return;
 
+		this.hasTouch = true;
+
 		const css = document.createElement( 'style' );
 		css.textContent = `
-			.touch-controls { position: absolute; inset: 0; pointer-events: none; z-index: 10; }
-			.steer-zone { position: absolute; inset: 0; pointer-events: auto; touch-action: none; }
-			.steer-base { position: absolute; width: 140px; height: 140px; margin: -70px 0 0 -70px; border-radius: 50%; background: rgba(255,255,255,0.1); border: 2px solid rgba(255,255,255,0.2); display: none; }
-			.steer-knob { position: absolute; top: 50%; left: 50%; width: 60px; height: 60px; margin: -30px 0 0 -30px; border-radius: 50%; background: rgba(255,255,255,0.35); }
+			.touch-controls { position: absolute; inset: 0; pointer-events: none; z-index: 10; display: none; }
+			body[data-state="playing"] .touch-controls { display: block; }
+			.touch-zone { position: absolute; inset: 0; pointer-events: auto; touch-action: none; }
+			.touch-controls[data-scheme="pads"] .joy, .touch-controls[data-scheme="joystick"] .pad { display: none; }
+			.joy-base { position: absolute; width: 140px; height: 140px; margin: -70px 0 0 -70px; border-radius: 50%; background: rgba(255,255,255,0.1); border: 2px solid rgba(255,255,255,0.28); box-sizing: border-box; }
+			.joy-base::after { content: ''; position: absolute; inset: 44px; border-radius: 50%; border: 1px dashed rgba(255,255,255,0.25); }
+			.knob { position: absolute; top: 50%; left: 50%; width: 56px; height: 56px; margin: -28px 0 0 -28px; border-radius: 50%; background: rgba(255,255,255,0.4); box-shadow: 0 2px 8px rgba(0,0,0,0.25); }
+			.pad-track { position: absolute; border-radius: 999px; background: rgba(255,255,255,0.1); border: 2px solid rgba(255,255,255,0.28); box-sizing: border-box; }
+			.pad-steer { width: 156px; height: 64px; margin: -32px 0 0 -78px; }
+			.pad-throttle { width: 64px; height: 156px; margin: -78px 0 0 -32px; }
+			.pad-track span { position: absolute; color: rgba(255,255,255,0.6); font: 700 14px sans-serif; }
+			.pad-steer span:first-of-type { left: 12px; top: 50%; transform: translateY(-50%); }
+			.pad-steer span:last-of-type { right: 12px; top: 50%; transform: translateY(-50%); }
+			.pad-throttle span:first-of-type { top: 8px; left: 50%; transform: translateX(-50%); }
+			.pad-throttle span:last-of-type { bottom: 8px; left: 50%; transform: translateX(-50%); }
 		`;
 		document.head.appendChild( css );
 
-		const container = document.createElement( 'div' );
-		container.className = 'touch-controls';
+		const ui = document.createElement( 'div' );
+		ui.className = 'touch-controls';
+		ui.dataset.scheme = this.scheme;
+		ui.innerHTML = `
+			<div class="touch-zone"></div>
+			<div class="joy joy-base"><div class="knob"></div></div>
+			<div class="pad pad-track pad-steer"><span>◀</span><div class="knob"></div><span>▶</span></div>
+			<div class="pad pad-track pad-throttle"><span>▲</span><div class="knob"></div><span>▼</span></div>
+		`;
+		document.body.appendChild( ui );
+		this.ui = ui;
 
-		const steerZone = document.createElement( 'div' );
-		steerZone.className = 'steer-zone';
+		const zone = ui.querySelector( '.touch-zone' );
+		const joy = ui.querySelector( '.joy-base' );
+		const steerPad = ui.querySelector( '.pad-steer' );
+		const throttlePad = ui.querySelector( '.pad-throttle' );
+		const knobs = { joy: joy.firstElementChild, steer: steerPad.querySelector( '.knob' ), throttle: throttlePad.querySelector( '.knob' ) };
 
-		const base = document.createElement( 'div' );
-		base.className = 'steer-base';
-		const knob = document.createElement( 'div' );
-		knob.className = 'steer-knob';
-		base.appendChild( knob );
-		steerZone.appendChild( base );
+		// Fixed positions, kept clear of the safe-area insets
+		const centres = { joy: [ 0, 0 ], steer: [ 0, 0 ], throttle: [ 0, 0 ] };
+		const insets = document.createElement( 'div' );
+		insets.style.cssText = 'position:fixed;visibility:hidden;pointer-events:none;left:env(safe-area-inset-left,0px);right:env(safe-area-inset-right,0px);bottom:env(safe-area-inset-bottom,0px);';
+		document.body.appendChild( insets );
 
-		container.appendChild( steerZone );
-		document.body.appendChild( container );
+		const layout = () => {
 
-		const steerRange = 40;
+			const w = window.innerWidth, h = window.innerHeight;
+			const left = parseFloat( getComputedStyle( insets ).left ) || 0;
+			const right = parseFloat( getComputedStyle( insets ).right ) || 0;
+			const bottom = parseFloat( getComputedStyle( insets ).bottom ) || 0;
+			const portrait = h > w;
 
-		steerZone.addEventListener( 'pointerdown', ( e ) => {
+			centres.joy = [ w / 2, Math.min( h * ( portrait ? 0.78 : 0.72 ), h - bottom - 90 ) ];
+			centres.steer = [ left + 30 + 78, h - bottom - 40 - 32 ];
+			centres.throttle = [ w - right - 30 - 32, h - bottom - 40 - 78 ];
 
-			if ( this.steerPointerId !== null ) return;
-			steerZone.setPointerCapture( e.pointerId );
-			this.steerPointerId = e.pointerId;
-			this.steerStartX = e.clientX;
-			this.steerStartY = e.clientY;
-			this.touchActive = true;
-			this.touchDirX = 0;
-			this.touchDirY = 0;
-			base.style.left = `${ e.clientX }px`;
-			base.style.top = `${ e.clientY }px`;
-			base.style.display = 'block';
+			joy.style.left = centres.joy[ 0 ] + 'px';
+			joy.style.top = centres.joy[ 1 ] + 'px';
+			steerPad.style.left = centres.steer[ 0 ] + 'px';
+			steerPad.style.top = centres.steer[ 1 ] + 'px';
+			throttlePad.style.left = centres.throttle[ 0 ] + 'px';
+			throttlePad.style.top = centres.throttle[ 1 ] + 'px';
 
-		} );
+		};
 
-		steerZone.addEventListener( 'pointermove', ( e ) => {
+		layout();
+		window.addEventListener( 'resize', layout );
 
-			if ( e.pointerId !== this.steerPointerId ) return;
-			let dx = ( e.clientX - this.steerStartX ) / steerRange;
-			let dy = ( e.clientY - this.steerStartY ) / steerRange;
-			const mag = Math.sqrt( dx * dx + dy * dy );
+		const clamp = ( v ) => Math.max( - 1, Math.min( 1, v ) );
 
-			if ( mag > 1 ) {
+		const move = ( role, clientX, clientY ) => {
 
-				dx /= mag;
-				dy /= mag;
+			const touch = this.touches[ role ];
+			const [ cx, cy ] = centres[ role ];
+
+			if ( role === 'joy' ) {
+
+				let dx = ( clientX - cx ) / JOY_RANGE, dy = ( clientY - cy ) / JOY_RANGE;
+				const mag = Math.hypot( dx, dy );
+
+				if ( mag > 1 ) {
+
+					dx /= mag;
+					dy /= mag;
+
+				}
+
+				touch.x = dx;
+				touch.y = dy;
+				knobs.joy.style.transform = `translate(${ dx * JOY_RANGE }px, ${ dy * JOY_RANGE }px)`;
+
+			} else if ( role === 'steer' ) {
+
+				touch.x = clamp( ( clientX - cx ) / PAD_RANGE );
+				knobs.steer.style.transform = `translateX(${ touch.x * PAD_RANGE }px)`;
+
+			} else {
+
+				touch.y = clamp( ( clientY - cy ) / PAD_RANGE );
+				knobs.throttle.style.transform = `translateY(${ touch.y * PAD_RANGE }px)`;
 
 			}
 
-			this.touchDirX = dx;
-			this.touchDirY = dy;
-			knob.style.transform = `translate(${ this.touchDirX * 60 }px, ${ this.touchDirY * 60 }px)`;
+		};
+
+		zone.addEventListener( 'pointerdown', ( e ) => {
+
+			const role = this.scheme === 'joystick' ? 'joy' : e.clientX < window.innerWidth / 2 ? 'steer' : 'throttle';
+			if ( this.touches[ role ] ) return;
+
+			zone.setPointerCapture( e.pointerId );
+			this.touches[ role ] = { id: e.pointerId, x: 0, y: 0 };
+			move( role, e.clientX, e.clientY );
 
 		} );
 
-		const endSteer = ( e ) => {
+		const roleOf = ( e ) => Object.keys( this.touches ).find( ( r ) => this.touches[ r ] && this.touches[ r ].id === e.pointerId );
 
-			if ( e.pointerId !== this.steerPointerId ) return;
-			this.steerPointerId = null;
-			this.touchActive = false;
-			this.touchDirX = 0;
-			this.touchDirY = 0;
-			knob.style.transform = '';
-			base.style.display = 'none';
+		zone.addEventListener( 'pointermove', ( e ) => {
 
-		};
+			const role = roleOf( e );
+			if ( role ) move( role, e.clientX, e.clientY );
 
-		steerZone.addEventListener( 'pointerup', endSteer );
-		steerZone.addEventListener( 'pointercancel', endSteer );
+		} );
 
-		this.cancelSteer = () => {
+		const end = ( e ) => {
 
-			if ( this.steerPointerId === null ) return;
-			if ( steerZone.hasPointerCapture( this.steerPointerId ) ) steerZone.releasePointerCapture( this.steerPointerId );
-			endSteer( { pointerId: this.steerPointerId } );
+			const role = roleOf( e );
+			if ( ! role ) return;
+
+			this.touches[ role ] = null;
+			knobs[ role ].style.transform = '';
 
 		};
 
-		// The joystick origin is in screen space and meaningless after rotation
-		window.addEventListener( 'orientationchange', () => this.cancelSteer() );
+		zone.addEventListener( 'pointerup', end );
+		zone.addEventListener( 'pointercancel', end );
+
+		this.cancelTouches = () => {
+
+			for ( const role of Object.keys( this.touches ) ) {
+
+				const touch = this.touches[ role ];
+				if ( ! touch ) continue;
+				if ( zone.hasPointerCapture( touch.id ) ) zone.releasePointerCapture( touch.id );
+				end( { pointerId: touch.id } );
+
+			}
+
+		};
+
+		// The touch origins are in screen space and meaningless after rotation
+		window.addEventListener( 'orientationchange', () => {
+
+			this.cancelTouches();
+			layout();
+
+		} );
 
 	}
 
 	reset() {
 
 		this.keys = {};
-		this.cancelSteer();
+		this.cancelTouches();
 
 	}
 
 	update() {
 
-		let x = 0, z = 0;
+		let x = 0, z = 0, mode = 'car';
 		let start = false, anyButton = false;
 
 		// Keyboard
@@ -146,7 +242,7 @@ export class Controls {
 
 		// Gamepad
 
-		const gamepads = navigator.getGamepads();
+		const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
 
 		for ( const gp of gamepads ) {
 
@@ -167,32 +263,46 @@ export class Controls {
 
 		}
 
-		// Touch — joystick mapped to world space (camera is 45° azimuth)
+		// Touch
 
-		if ( this.touchActive ) {
+		const joy = this.touches.joy, steer = this.touches.steer, throttle = this.touches.throttle;
 
-			const jx = this.touchDirX;
-			const jy = this.touchDirY;
-			const mag = Math.sqrt( jx * jx + jy * jy );
+		if ( joy ) {
 
-			if ( mag > 0.15 ) {
+			// Screen drag → world direction through the 45° camera azimuth;
+			// drag length past the dead zone → speed
+			const mag = Math.hypot( joy.x, joy.y );
+			mode = 'world';
+			x = z = 0;
 
-				x = ( jx + jy ) * Math.SQRT1_2 / mag;
-				z = ( - jx + jy ) * Math.SQRT1_2 / mag;
+			if ( mag > JOY_DEAD ) {
+
+				const speed = Math.min( 1, ( mag - JOY_DEAD ) / ( 1 - JOY_DEAD ) );
+				x = ( joy.x + joy.y ) * Math.SQRT1_2 / mag * speed;
+				z = ( - joy.x + joy.y ) * Math.SQRT1_2 / mag * speed;
 
 			}
 
 		}
 
-		this.x = x;
-		this.z = z;
+		if ( steer && Math.abs( steer.x ) > PAD_DEAD ) x = steer.x;
+		if ( throttle && Math.abs( throttle.y ) > PAD_DEAD ) z = - throttle.y;
 
-		const pause = start && ! this.prevStart;
-		const pressed = anyButton && ! this.prevAnyButton;
+		const resetKey = Boolean( this.keys[ 'KeyR' ] );
+
+		const input = this.input;
+		input.x = x;
+		input.z = z;
+		input.mode = mode;
+		input.pause = start && ! this.prevStart;
+		input.anyButton = anyButton && ! this.prevAnyButton;
+		input.reset = resetKey && ! this.prevReset;
+
 		this.prevStart = start;
 		this.prevAnyButton = anyButton;
+		this.prevReset = resetKey;
 
-		return { x, z, touchActive: this.touchActive, pause, anyButton: pressed };
+		return input;
 
 	}
 

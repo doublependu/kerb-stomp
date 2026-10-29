@@ -3,6 +3,9 @@ import * as THREE from 'three';
 const _desired = new THREE.Vector3();
 const _delta = new THREE.Vector3();
 const _lookPoint = new THREE.Vector3();
+const _ray = new THREE.Vector3();
+const _origin = new THREE.Vector3();
+const _probe = new THREE.PerspectiveCamera();
 
 const BASE_FOV = 40;
 const MAX_FOV = 60;
@@ -50,6 +53,11 @@ export class Camera {
 
 		this.smoothedDesired = new THREE.Vector3();
 		this.initialized = false;
+
+		// Where the camera looks (world), and the ground under the view's four
+		// corners relative to it: what the sun's shadow box has to cover
+		this.lookPoint = new THREE.Vector3();
+		this.footprint = [ new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3() ];
 
 		const segments = 64;
 		const points = [];
@@ -101,6 +109,34 @@ export class Camera {
 		this.deadzoneX = this.deadzoneRadius * Math.min( 1, halfX / this.refHalfX );
 		this.deadzoneY = this.deadzoneRadius * Math.min( 1, halfY / this.refHalfY );
 
+		this.updateFootprint();
+
+	}
+
+	// The view's corner rays hit the ground (half a unit below the look point,
+	// which sits above the car) or, toward the horizon, end at the far plane
+	updateFootprint() {
+
+		_probe.copy( this.camera );
+		_probe.position.copy( this.offset ).multiplyScalar( this.zoomOut );
+		_probe.lookAt( 0, 0, 0 );
+		_probe.updateMatrixWorld();
+
+		_origin.copy( _probe.position );
+		const groundY = - 0.5;
+
+		for ( let i = 0; i < 4; i ++ ) {
+
+			_ray.set( i & 1 ? 1 : - 1, i & 2 ? 1 : - 1, 0.5 ).unproject( _probe ).sub( _origin ).normalize();
+
+			let t = _ray.y < 0 ? ( groundY - _origin.y ) / _ray.y : Infinity;
+			t = Math.min( t, this.camera.far );
+
+			this.footprint[ i ].copy( _origin ).addScaledVector( _ray, t );
+			this.footprint[ i ].y = groundY;
+
+		}
+
 	}
 
 	update( dt, target, velocity ) {
@@ -148,6 +184,7 @@ export class Camera {
 
 		this.camera.position.copy( _lookPoint ).addScaledVector( this.offset, this.zoomOut );
 		this.camera.lookAt( _lookPoint );
+		this.lookPoint.copy( _lookPoint );
 
 		this.debug.position.copy( this.smoothedDesired );
 		this.debug.position.y += 0.05;

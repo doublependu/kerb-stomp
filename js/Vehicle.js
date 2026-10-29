@@ -10,9 +10,13 @@ const _mat4 = new THREE.Matrix4();
 const _quat = new THREE.Quaternion();
 const _up = new THREE.Vector3( 0, 1, 0 );
 
-const SPEED_SCALE = 12.5;
 const LINEAR_DAMP = 0.1;
 export const MAX_SPEED = 1.5;
+
+// Collision spin (rad/s) bleeds off at this rate
+const SPIN_DECAY = 3;
+
+const WHEEL = /^wheel-(front|back)-(left|right)$/;
 
 function lerpAngle( a, b, t ) {
 
@@ -41,7 +45,9 @@ export class Vehicle {
 		this.prevModelPos = new THREE.Vector3( 3.5, 0, 5 );
 
 		this.container = new THREE.Group();
+		this.model = null;
 		this.bodyNode = null;
+		this.bodyY = 0.3;
 		this.wheels = [];
 		this.wheelFL = null;
 		this.wheelFR = null;
@@ -53,17 +59,29 @@ export class Vehicle {
 
 		this.driftIntensity = 0;
 
-		// Where a fall off the world puts the truck back (main.js sets it from
-		// the track's finish line on custom maps)
+		// Yaw rate from car-to-car hits (CarCollisions), on top of steering
+		this.spin = 0;
+
+		// Where a fall off the world puts the truck back, unless onFall
+		// handles it (races put the car back where it left the track)
 		this.spawnPosition = [ 3.5, 0.5, 5 ];
 		this.spawnAngle = 0;
+		this.onFall = null;
 		this.resets = 0;
 
 	}
 
-	init( model ) {
+	// bodyY: the body's resting height in model units (CarList.js)
+	init( model, bodyY = 0.3 ) {
+
+		if ( this.model ) this.container.remove( this.model );
 
 		const vehicleModel = model.clone();
+		this.model = vehicleModel;
+		this.bodyY = bodyY;
+		this.bodyNode = null;
+		this.wheels = [];
+		this.wheelFL = this.wheelFR = this.wheelBL = this.wheelBR = null;
 
 		this.container.add( vehicleModel );
 
@@ -77,7 +95,7 @@ export class Vehicle {
 				child.rotation.order = 'YXZ';
 				this.bodyNode = child;
 
-			} else if ( name.includes( 'wheel' ) ) {
+			} else if ( WHEEL.test( name ) ) {
 
 				child.rotation.order = 'YXZ';
 				this.wheels.push( child );
@@ -107,18 +125,29 @@ export class Vehicle {
 		this.inputX = controlsInput.x;
 		this.inputZ = controlsInput.z;
 
-		if ( controlsInput.touchActive && ( this.inputX !== 0 || this.inputZ !== 0 ) ) {
+		const throttle = Math.hypot( this.inputX, this.inputZ );
 
-			// Touch: joystick defines world-space direction, auto-gas
+		if ( controlsInput.mode === 'world' && throttle > 0 ) {
+
+			// Touch joystick: (x, z) is a world-space direction to head in,
+			// and its length (0–1) how fast to go
 			const targetAngle = Math.atan2( this.inputX, this.inputZ );
 			_quat.setFromAxisAngle( _up, targetAngle );
 			this.container.quaternion.slerp( _quat, 1 - Math.exp( - 3 * dt ) );
 
 			_forward.set( 0, 0, 1 ).applyQuaternion( this.container.quaternion );
-			const cross = _forward.x * this.inputZ - _forward.z * this.inputX;
+			const cross = ( _forward.x * this.inputZ - _forward.z * this.inputX ) / throttle;
 			this.inputX = THREE.MathUtils.clamp( - cross * 2, - 1, 1 );
+			this.inputZ = Math.min( 1, throttle );
 
-			this.linearSpeed = THREE.MathUtils.lerp( this.linearSpeed, MAX_SPEED, dt * 1.5 );
+			this.linearSpeed = THREE.MathUtils.lerp( this.linearSpeed, MAX_SPEED * this.inputZ, dt * 1.5 );
+
+		} else if ( controlsInput.mode === 'world' ) {
+
+			// Thumb lifted: coast down
+			this.inputX = 0;
+			this.inputZ = 0;
+			this.linearSpeed = THREE.MathUtils.lerp( this.linearSpeed, 0, dt * 1.5 );
 
 		} else {
 
@@ -148,6 +177,14 @@ export class Vehicle {
 				this.linearSpeed = THREE.MathUtils.lerp( this.linearSpeed, targetSpeed * MAX_SPEED, dt * 1.5 );
 
 			}
+
+		}
+
+		if ( this.spin !== 0 ) {
+
+			this.container.rotateY( this.spin * dt );
+			this.spin *= Math.exp( - SPIN_DECAY * dt );
+			if ( Math.abs( this.spin ) < 0.01 ) this.spin = 0;
 
 		}
 
@@ -195,7 +232,12 @@ export class Vehicle {
 			dt
 		);
 
-		if ( this.spherePos.y < - 10 ) this.reset();
+		if ( this.spherePos.y < - 10 ) {
+
+			if ( this.onFall ) this.onFall();
+			else this.reset();
+
+		}
 
 		this.container.position.set(
 			this.spherePos.x,
@@ -220,7 +262,13 @@ export class Vehicle {
 
 	reset() {
 
-		const [ x, y, z ] = this.spawnPosition;
+		this.resetTo( this.spawnPosition, this.spawnAngle );
+
+	}
+
+	resetTo( position, angle ) {
+
+		const [ x, y, z ] = position;
 
 		if ( this.rigidBody ) {
 
@@ -233,10 +281,12 @@ export class Vehicle {
 		this.spherePos.set( x, y, z );
 		this.sphereVel.set( 0, 0, 0 );
 		this.prevModelPos.set( x, y - 0.5, z );
+		this.container.position.set( x, y - 0.5, z );
 		this.linearSpeed = 0;
 		this.angularSpeed = 0;
 		this.acceleration = 0;
-		this.container.quaternion.setFromAxisAngle( _up, this.spawnAngle );
+		this.spin = 0;
+		this.container.quaternion.setFromAxisAngle( _up, angle );
 		this.resets ++;
 
 	}
@@ -268,7 +318,7 @@ export class Vehicle {
 			dt * 5
 		);
 
-		this.bodyNode.position.y = THREE.MathUtils.lerp( this.bodyNode.position.y, 0.3, dt * 5 );
+		this.bodyNode.position.y = THREE.MathUtils.lerp( this.bodyNode.position.y, this.bodyY, dt * 5 );
 
 	}
 

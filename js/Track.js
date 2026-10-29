@@ -6,6 +6,12 @@ export const CELL_RAW = 9.99;
 export const GRID_SCALE = 0.75;
 
 const _dummy = new THREE.Object3D();
+const _matrix = new THREE.Matrix4();
+
+// Decorations are instanced per square of DECO_CHUNK cells rather than once
+// over the whole map: an InstancedMesh is culled as a whole, so one spanning
+// the map is never skipped by the main or the shadow pass.
+const DECO_CHUNK = 4;
 
 export const TRACK_CELLS = [
 	[ -3, -3, 'track-corner',   16 ],
@@ -109,13 +115,7 @@ const DECO_CELLS = [
 	[  2,  4, 'decoration-forest', 0 ],
 ];
 
-const NPC_TRUCKS = [
-	[ 'vehicle-truck-green',  -3.51, -0.01,  12.70,  98.0 ],
-	[ 'vehicle-truck-purple', -23.78, -0.14, -13.56,   0.0 ],
-	[ 'vehicle-truck-red',    -1.36, -0.15, -23.80, 155.9 ],
-];
-
-export function buildTrack( scene, models, customCells ) {
+export function buildTrack( scene, models, customCells, { chunk = DECO_CHUNK } = {} ) {
 
 	const trackGroup = new THREE.Group();
 	trackGroup.position.y = -0.5;
@@ -227,26 +227,43 @@ export function buildTrack( scene, models, customCells ) {
 
 			if ( positions.length === 0 || ! src ) return;
 
-			const count = positions.length / 3;
+			const size = CELL_RAW * chunk;
+			const chunks = new Map();
+
+			for ( let i = 0; i < positions.length; i += 3 ) {
+
+				const key = chunk ? Math.floor( positions[ i ] / size ) + ',' + Math.floor( positions[ i + 1 ] / size ) : '';
+				if ( ! chunks.has( key ) ) chunks.set( key, [] );
+				chunks.get( key ).push( i );
+
+			}
+
+			// Compressed models keep a dequantization transform on the mesh node
+			src.updateMatrixWorld( true );
 
 			src.traverse( ( child ) => {
 
 				if ( ! child.isMesh ) return;
 
-				const inst = new THREE.InstancedMesh( child.geometry, child.material, count );
-				inst.castShadow = true;
-				inst.receiveShadow = true;
+				for ( const list of chunks.values() ) {
 
-				for ( let i = 0; i < count; i ++ ) {
+					const inst = new THREE.InstancedMesh( child.geometry, child.material, list.length );
+					inst.castShadow = true;
+					inst.receiveShadow = true;
 
-					_dummy.position.set( positions[ i * 3 ], 0.5, positions[ i * 3 + 1 ] );
-					_dummy.rotation.y = positions[ i * 3 + 2 ] * Math.PI / 2;
-					_dummy.updateMatrix();
-					inst.setMatrixAt( i, _dummy.matrix );
+					list.forEach( ( i, k ) => {
+
+						_dummy.position.set( positions[ i ], 0.5, positions[ i + 1 ] );
+						_dummy.rotation.y = positions[ i + 2 ] * Math.PI / 2;
+						_dummy.updateMatrix();
+						inst.setMatrixAt( k, _matrix.multiplyMatrices( _dummy.matrix, child.matrixWorld ) );
+
+					} );
+
+					inst.computeBoundingSphere();
+					decoGroup.add( inst );
 
 				}
-
-				decoGroup.add( inst );
 
 			} );
 
@@ -277,31 +294,7 @@ export function buildTrack( scene, models, customCells ) {
 
 	} );
 
-	if ( ! customCells ) {
-
-		for ( const [ key, x, y, z, rotDeg ] of NPC_TRUCKS ) {
-
-			const src = models[ key ];
-			if ( ! src ) continue;
-
-			const npc = src.clone();
-			npc.position.set( x, y, z );
-			npc.rotation.y = THREE.MathUtils.degToRad( rotDeg + 180 );
-			npc.traverse( ( c ) => {
-
-				if ( c.isMesh ) {
-
-					c.castShadow = true;
-					c.receiveShadow = true;
-
-				}
-
-			} );
-			scene.add( npc );
-
-		}
-
-	}
+	return { trackGroup, trackPieceGroup, decoGroup };
 
 }
 

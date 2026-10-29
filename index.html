@@ -63,7 +63,10 @@
 		}
 		body:not([data-state="playing"]) #pause-btn,
 		body:not([data-state="playing"]) #editor-link,
-		body:not([data-state="playing"]) #lap-timer { visibility: hidden; }
+		body:not([data-state="playing"]) #lap-timer,
+		body:not([data-state="playing"]) #countdown { visibility: hidden; }
+		/* The right thumb pad sits in that corner; the pause menu has the link */
+		@media (hover: none) and (pointer: coarse) { #editor-link { display: none; } }
 
 		/* Shell overlay: loading → ready → paused, plus error */
 
@@ -82,14 +85,27 @@
 			transition: opacity 0.25s, background 0.25s;
 			overflow: hidden;
 		}
-		#shell[data-state="ready"], #shell[data-state="paused"] { background: rgba(20, 23, 31, 0.55); }
+		#shell[data-state="ready"], #shell[data-state="paused"], #shell[data-state="finished"] { background: rgba(20, 23, 31, 0.45); }
 		#shell[data-state="playing"] { opacity: 0; pointer-events: none; }
 		#shell[data-state="ready"] { cursor: pointer; }
-		#shell .when-loading, #shell .when-ready, #shell .when-paused, #shell .when-error { display: none; }
+		#shell .when-loading, #shell .when-ready, #shell .when-paused, #shell .when-finished, #shell .when-error { display: none; }
 		#shell[data-state="loading"] .when-loading,
 		#shell[data-state="ready"] .when-ready,
 		#shell[data-state="paused"] .when-paused,
+		#shell[data-state="finished"] .when-finished,
 		#shell[data-state="error"] .when-error { display: block; }
+		#shell[data-view="setup"] .view-cars, #shell[data-view="cars"] .view-setup { display: none; }
+		#shell[data-view="cars"] .tagline, #shell[data-view="cars"] h1, #shell[data-view="cars"] .links { display: none; }
+
+		/* Setup and results leave the car on the grid in view: beside the
+		   panel on wide screens, above it on tall ones */
+		@media (min-aspect-ratio: 5/4) and (min-width: 760px) {
+			#shell[data-state="ready"], #shell[data-state="finished"] { justify-content: flex-start; padding-left: calc(4vw + var(--safe-left)); }
+		}
+		@media (max-aspect-ratio: 4/5) {
+			#shell[data-state="ready"], #shell[data-state="finished"] { align-items: flex-end; }
+			#shell[data-state="ready"] .tagline { display: none; }
+		}
 
 		#shell .panel {
 			width: min(420px, 100%);
@@ -121,11 +137,13 @@
 		.status { margin: 10px 0 0; font-size: 12px; opacity: 0.65; font-variant-numeric: tabular-nums; }
 
 		.start-hint { margin: 4px 0 0; font: 700 18px var(--font); animation: pulse 1.6s ease-in-out infinite; }
-		.hint-touch, .touch-only { display: none; }
+		.hint-touch, .touch-only, .touch-setting { display: none; }
 		@media (hover: none) and (pointer: coarse) {
 			.hint-key, .key-only { display: none; }
 			.hint-touch, .touch-only { display: inline; }
+			.touch-setting { display: block; }
 		}
+		body[data-touch="pads"] .joystick-help, body[data-touch="joystick"] .pads-help { display: none !important; }
 		@keyframes pulse { 50% { opacity: 0.55; } }
 
 		#shell button, #shell .button {
@@ -145,7 +163,51 @@
 		#shell button.primary:hover { background: #ffd666; }
 		#shell [hidden] { display: none !important; }
 
-		.setting { margin: 18px 0 0; }
+		.setting { margin: 16px 0 0; }
+		.setting:first-child { margin-top: 4px; }
+		.chips { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+		#shell .chips button { padding: 7px 13px; font-size: 13px; }
+		#shell .chips button.active, #shell .segmented button.active { background: #fff; color: #1c2029; border-color: #fff; }
+		.car-current { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; border-radius: 16px !important; padding: 6px 16px 6px 6px !important; }
+		.car-current .thumb { flex: none; }
+		.car-current .car-text { flex: 1; display: flex; flex-direction: column; }
+		.car-current small, .car-tile small { font-weight: 500; opacity: 0.6; font-size: 12px; }
+		.car-current .change { font-size: 12px; opacity: 0.75; }
+		.thumb { display: block; width: 72px; height: 54px; background-repeat: no-repeat; }
+		.stepper { display: inline-flex; align-items: center; gap: 4px; padding: 3px; border-radius: 999px; background: rgba(255,255,255,0.08); }
+		#shell .stepper button { width: 40px; height: 36px; padding: 0; font-size: 20px; line-height: 1; background: transparent; border-color: transparent; }
+		#shell .stepper button:disabled { opacity: 0.3; cursor: default; }
+		.stepper output { min-width: 34px; font: 700 18px var(--font); font-variant-numeric: tabular-nums; }
+		.view-cars h2 { margin-top: 2px !important; }
+		.car-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 6px; margin: 0 0 14px; }
+		#shell .car-tile { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 4px 8px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+		#shell .car-tile.active { background: rgba(255,200,61,0.25); border-color: var(--accent); }
+		.car-tile .thumb { width: 76px; height: 57px; }
+		#shell #start-btn { margin-top: 18px; }
+		.start-hint-key { margin: 8px 0 0; font-size: 12px; opacity: 0.55; }
+		.results { list-style: none; margin: 0 0 16px; padding: 0; text-align: left; font-variant-numeric: tabular-nums; }
+		.results li { display: grid; grid-template-columns: 2.2em 1fr auto; gap: 8px; align-items: baseline; padding: 6px 8px; border-radius: 8px; }
+		.results li.you { background: rgba(255,200,61,0.18); }
+		.results .pos { font-weight: 800; font-style: italic; }
+		.results .time { opacity: 0.8; font-size: 13px; }
+		.results small { opacity: 0.55; margin-left: 6px; }
+		.result-title { font-size: 20px !important; letter-spacing: 0 !important; text-transform: none !important; opacity: 1 !important; }
+
+		/* Short landscape screens (phones on their side): two columns, small
+		   title, so Race stays above the fold */
+		@media (max-height: 520px) and (min-aspect-ratio: 1/1) {
+			#shell .panel { width: min(700px, 100%); padding: 12px 18px 10px; }
+			#shell h1 { font-size: 26px; }
+			#shell .tagline { display: none; }
+			.view-setup { display: grid; grid-template-columns: 1fr 1fr; gap: 0 18px; align-items: start; }
+			.view-setup .setting, .view-setup .setting:first-child { margin-top: 8px; }
+			.view-setup #start-btn, .view-setup .start-hint-key { grid-column: 1 / -1; }
+			#shell #start-btn { margin-top: 10px; padding: 10px; }
+			.setting-label { margin-bottom: 5px; }
+			.links { margin-top: 10px; padding-top: 8px; }
+			.when-paused .setting { margin-top: 10px; }
+			.when-paused .row { margin-top: 10px; }
+		}
 		.setting-label { display: block; margin-bottom: 8px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.6; }
 		.segmented { display: inline-flex; padding: 3px; gap: 2px; border-radius: 999px; background: rgba(255,255,255,0.08); }
 		#shell .segmented button { padding: 7px 12px; font-size: 13px; background: transparent; border-color: transparent; }
@@ -186,7 +248,7 @@
 		<a class="fork-ribbon" href="%VITE_REPO_URL%" target="_blank" rel="noopener">Fork me on GitHub</a>
 		<div class="panel" role="dialog" aria-labelledby="shell-title">
 			<h1 id="shell-title">Kerb <span>Stomp</span></h1>
-			<p class="tagline">Tiny trucks, tight kerbs. Beat your best lap.</p>
+			<p class="tagline">Tiny cars, tight kerbs. Race the pack or beat your best lap.</p>
 
 			<div class="when-loading" aria-live="polite">
 				<div class="progress"><div class="progress-bar"></div></div>
@@ -194,12 +256,50 @@
 			</div>
 
 			<div class="when-ready">
-				<p class="start-hint"><span class="hint-key">Press any key</span><span class="hint-touch">Tap</span> to drive</p>
+				<div class="view-setup">
+					<div class="setting">
+						<span class="setting-label">Track</span>
+						<div class="chips" id="track-picker" role="group" aria-label="Track"></div>
+					</div>
+					<div class="setting">
+						<span class="setting-label">Car</span>
+						<button id="car-btn" class="car-current" aria-label="Choose car"><span class="thumb"></span><span class="car-text"><b class="car-name"></b><small class="car-size"></small></span><span class="change">Change</span></button>
+					</div>
+					<div class="setting npc-setting">
+						<span class="setting-label">Opponents</span>
+						<div class="stepper npc-stepper"><button data-step="-1" aria-label="Fewer opponents">−</button><output>4</output><button data-step="1" aria-label="More opponents">+</button></div>
+					</div>
+					<div class="setting touch-setting">
+						<span class="setting-label">Controls</span>
+						<div class="segmented touch-scheme" role="group" aria-label="Touch controls"><button data-touch="joystick">Joystick</button><button data-touch="pads">Two thumbs</button></div>
+					</div>
+					<button id="start-btn" class="primary">Race</button>
+					<p class="start-hint-key key-only">Enter or W to start</p>
+				</div>
+				<div class="view-cars">
+					<h2>Choose your car</h2>
+					<p class="setting-note">Every car drives the same; bigger ones shove harder and are harder to push around.</p>
+					<div class="car-grid" id="car-grid"></div>
+					<button id="cars-back">Back</button>
+				</div>
 			</div>
 
 			<div class="when-paused">
 				<h2>Paused</h2>
 				<button id="resume-btn" class="primary">Resume</button>
+				<div class="row">
+					<button class="restart-btn">Restart</button>
+					<button id="reset-btn">Reset car</button>
+					<button class="setup-btn">Car &amp; track</button>
+				</div>
+				<div class="setting npc-setting">
+					<span class="setting-label">Opponents <small>(from the next race)</small></span>
+					<div class="stepper npc-stepper"><button data-step="-1" aria-label="Fewer opponents">−</button><output>4</output><button data-step="1" aria-label="More opponents">+</button></div>
+				</div>
+				<div class="setting touch-setting">
+					<span class="setting-label">Controls</span>
+					<div class="segmented touch-scheme" role="group" aria-label="Touch controls"><button data-touch="joystick">Joystick</button><button data-touch="pads">Two thumbs</button></div>
+				</div>
 				<div class="setting">
 					<span class="setting-label">Graphics</span>
 					<div class="segmented" role="group" aria-label="Graphics quality">
@@ -216,9 +316,19 @@
 					<a class="button editor-link" href="editor.html">Create new track</a>
 				</div>
 				<p class="controls-help">
-					<span class="key-only">WASD / arrow keys or a gamepad to drive · Esc or P to pause</span>
-					<span class="touch-only">Hold and drag anywhere to steer: the truck drives toward your thumb</span>
+					<span class="key-only">WASD / arrow keys or a gamepad to drive · R to reset the car · Esc or P to pause</span>
+					<span class="touch-only joystick-help">Joystick: drag from its centre toward where to go, further to go faster</span>
+					<span class="touch-only pads-help">Two thumbs: slide the left pad to steer, the right pad up to go and down to brake</span>
 				</p>
+			</div>
+
+			<div class="when-finished">
+				<h2 class="result-title"></h2>
+				<ol class="results" id="results"></ol>
+				<button id="again-btn" class="primary">Race again</button>
+				<div class="row">
+					<button class="setup-btn">Car &amp; track</button>
+				</div>
 			</div>
 
 			<div class="when-error">

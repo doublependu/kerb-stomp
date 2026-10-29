@@ -107,6 +107,8 @@ export class GameAudio {
 		this.impactBuffers = [];
 		this.impactPlayers = [];
 		this.impactIndex = 0;
+		this.worldImpactPlayers = [];
+		this.worldImpactIndex = 0;
 		this.distanceFilters = [];
 		this.unlocked = false;
 		this.paused = false;
@@ -120,12 +122,15 @@ export class GameAudio {
 	// `target` is the object the sounds live on (the vehicle container):
 	// every source is a PositionalAudio child of it, panned and attenuated
 	// relative to the camera-mounted listener.
-	init( camera, target ) {
+	// `scene` holds the anchors for sounds that play where they happen
+	// (opponents hitting each other or a wall).
+	init( camera, target, scene ) {
 
 		this.listener = new THREE.AudioListener();
 		camera.add( this.listener );
 
 		this.target = target;
+		this.scene = scene;
 
 		// Shared outdoor reverb: sources send into one convolver. Impacts get
 		// a hotter send — a crash reads as "in the world" mainly through its
@@ -165,6 +170,7 @@ export class GameAudio {
 		for ( let i = 0; i < 3; i ++ ) this.impactBuffers.push( createImpactBuffer( ctx, i + 1, 0.4 ) );
 		for ( let i = 0; i < 3; i ++ ) this.impactBuffers.push( createImpactBuffer( ctx, i + 4, 1.0 ) );
 		for ( let i = 0; i < 3; i ++ ) this.impactPlayers.push( this.createSampleSource( this.impactReverbSend ) );
+		for ( let i = 0; i < 4; i ++ ) this.worldImpactPlayers.push( this.createWorldSource( this.impactReverbSend ) );
 
 		const loader = new THREE.AudioLoader();
 
@@ -311,6 +317,49 @@ export class GameAudio {
 
 	}
 
+	// A sample player at a point in the world (moved per sound), with its own
+	// distance filter, set when it plays
+	createWorldSource( reverbSend ) {
+
+		const anchor = new THREE.Object3D();
+		this.scene.add( anchor );
+
+		const distance = this.neutralLowpass();
+		const tone = this.neutralLowpass();
+		const audio = new THREE.PositionalAudio( this.listener );
+		audio.setRefDistance( REF_DISTANCE );
+		audio.panner.panningModel = 'equalpower';
+		audio.setFilters( [ distance, tone ] );
+		audio.gain.connect( reverbSend );
+		anchor.add( audio );
+
+		return { sound: audio, tone, distance, anchor };
+
+	}
+
+	// Start-light beep: short square blip, GO is higher and longer
+	beep( frequency, duration ) {
+
+		if ( ! this.unlocked || this.paused ) return;
+
+		const ctx = this.listener.context;
+		const t = ctx.currentTime;
+		const osc = ctx.createOscillator();
+		const gain = ctx.createGain();
+
+		osc.type = 'square';
+		osc.frequency.value = frequency;
+		gain.gain.setValueAtTime( 0.0001, t );
+		gain.gain.exponentialRampToValueAtTime( 0.08, t + 0.01 );
+		gain.gain.setValueAtTime( 0.08, t + duration * 0.7 );
+		gain.gain.exponentialRampToValueAtTime( 0.0001, t + duration );
+
+		osc.connect( gain ).connect( this.listener.getInput() );
+		osc.start( t );
+		osc.stop( t + duration + 0.05 );
+
+	}
+
 	startSounds() {
 
 		if ( this.skidSound.buffer && ! this.skidSound.isPlaying ) this.skidSound.play();
@@ -438,14 +487,30 @@ export class GameAudio {
 
 	}
 
-	playImpact( impactVelocity ) {
+	// position: where it happened, for hits away from the player's car
+	playImpact( impactVelocity, position = null ) {
 
 		if ( ! this.unlocked ) return;
 
 		// Round-robin a player; swap in a random buffer from the soft or hard
 		// set so repeated hits of the same strength still differ.
-		const { sound, tone } = this.impactPlayers[ this.impactIndex % this.impactPlayers.length ];
-		this.impactIndex ++;
+		let player;
+
+		if ( position ) {
+
+			player = this.worldImpactPlayers[ this.worldImpactIndex ++ % this.worldImpactPlayers.length ];
+			player.anchor.position.copy( position );
+			player.anchor.updateMatrixWorld( true );
+			this.listener.getWorldPosition( _listenerPos );
+			player.distance.frequency.value = distanceCutoff( _listenerPos.distanceTo( position ) );
+
+		} else {
+
+			player = this.impactPlayers[ this.impactIndex ++ % this.impactPlayers.length ];
+
+		}
+
+		const { sound, tone } = player;
 
 		const set = impactVelocity < IMPACT_HARD_VELOCITY ? 0 : 3;
 		const buffer = this.impactBuffers[ set + ( Math.random() * 3 | 0 ) ];

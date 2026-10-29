@@ -4,7 +4,7 @@
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { centerline, encodeLoop, encodeCells } from './track.mjs';
-import { KeyboardDriver, TouchDriver, drive } from './driver.mjs';
+import { KeyboardDriver, TouchDriver, PadsDriver, drive } from './driver.mjs';
 
 const DESKTOP = { viewport: { width: 1920, height: 1080 } };
 const LAPTOP = { viewport: { width: 1366, height: 768 } };
@@ -25,12 +25,37 @@ function check( checks, name, ok, detail = '' ) {
 
 }
 
-async function open( env, contextOptions, { query = '', video = env.record, label } ) {
+// Saved settings the page starts with: a car already picked (or the car grid
+// opens first), the opponent count (0 = the time trial these scenarios were
+// written for) and the touch scheme
+function settings( { car = 'vehicle-truck-yellow', npcs = 0, touch = 'joystick' } = {} ) {
+
+	return { car, npcs, touch };
+
+}
+
+async function presetStorage( context, prefs ) {
+
+	await context.addInitScript( ( p ) => {
+
+		if ( sessionStorage.getItem( 'playtest-preset' ) ) return;
+		sessionStorage.setItem( 'playtest-preset', '1' );
+		localStorage.setItem( 'kerb.car', p.car );
+		localStorage.setItem( 'kerb.npcs', String( p.npcs ) );
+		localStorage.setItem( 'kerb.touch', p.touch );
+
+	}, prefs );
+
+}
+
+async function open( env, contextOptions, { query = '', video = env.record, label, prefs = {} } ) {
 
 	const context = await env.browser.newContext( {
 		...contextOptions,
 		...( video ? { recordVideo: { dir: env.videoDir, size: contextOptions.viewport } } : {} ),
 	} );
+
+	await presetStorage( context, settings( prefs ) );
 
 	const page = await context.newPage();
 	const errors = [];
@@ -62,6 +87,8 @@ async function trackLine( page ) {
 
 }
 
+const DRIVERS = { keyboard: KeyboardDriver, touch: TouchDriver, pads: PadsDriver };
+
 async function driveRuns( env, name, contextOptions, { input, skills, laps, query = '' } ) {
 
 	const checks = [];
@@ -70,9 +97,9 @@ async function driveRuns( env, name, contextOptions, { input, skills, laps, quer
 	for ( const skill of skills ) {
 
 		const label = `${ name }-${ skill }`;
-		const { page, errors, close } = await open( env, contextOptions, { query, label } );
+		const { page, errors, close } = await open( env, contextOptions, { query, label, prefs: { touch: input === 'pads' ? 'pads' : 'joystick' } } );
 		const line = await trackLine( page );
-		const Driver = input === 'touch' ? TouchDriver : KeyboardDriver;
+		const Driver = DRIVERS[ input ];
 		const run = await drive( page, new Driver( page, line, { skill, seed: env.seed } ), { laps, timeout: laps * 60 + 20 } );
 
 		run.label = label;
@@ -112,6 +139,189 @@ export const SCENARIOS = {
 	'phone-portrait-touch': ( env ) => driveRuns( env, 'phone-portrait-touch', PHONE_PORTRAIT, { input: 'touch', skills: [ 'novice', 'average', 'expert' ], laps: env.laps } ),
 
 	'phone-landscape-touch': ( env ) => driveRuns( env, 'phone-landscape-touch', PHONE_LANDSCAPE, { input: 'touch', skills: [ 'average' ], laps: env.laps } ),
+
+	'phone-portrait-pads': ( env ) => driveRuns( env, 'phone-portrait-pads', PHONE_PORTRAIT, { input: 'pads', skills: [ 'novice', 'average', 'expert' ], laps: env.laps } ),
+
+	'phone-landscape-pads': ( env ) => driveRuns( env, 'phone-landscape-pads', PHONE_LANDSCAPE, { input: 'pads', skills: [ 'average' ], laps: env.laps } ),
+
+	// The built-in tracks in time trial, one average lap each way round
+	'tracks': async ( env ) => {
+
+		const checks = [];
+		const runs = [];
+
+		for ( const id of [ 'indianapolis', 'monza', 'monaco' ] ) {
+
+			const result = await driveRuns( env, `track-${ id }`, LAPTOP, { input: 'keyboard', skills: [ 'average' ], laps: 2, query: '&track=' + id } );
+			checks.push( ...result.checks );
+			runs.push( ...result.runs );
+
+		}
+
+		return { checks, runs };
+
+	},
+
+	// Races against the NPCs: each bot skill races twice (the first race sets
+	// a best lap, which the second race's field is paced from). Records the
+	// finishing position: the field should be beatable but not a walkover.
+	'race': async ( env ) => {
+
+		const checks = [];
+		const runs = [];
+		const skills = env.raceSkills || [ 'novice', 'average', 'expert' ];
+
+		for ( const id of env.raceTracks || [ 'classic' ] ) {
+
+			for ( const skill of skills ) {
+
+				const label = `race-${ id }-${ skill }`;
+				const { page, errors, close } = await open( env, LAPTOP, { query: '&track=' + id, label, prefs: { npcs: env.npcs ?? 4 } } );
+				const line = await trackLine( page );
+				const results = [];
+
+				// A failed race is a failed check; the rest of the matrix still runs
+				try {
+
+					for ( let race = 1; race <= 2; race ++ ) {
+
+						// Enter: Race on the setup screen, Race again on the results.
+						// The race's lap count is only set once it lines up.
+						await page.keyboard.press( 'Enter' );
+						await page.waitForFunction( () => window.__kerb.state().phase === 'countdown', null, { timeout: 15000 } );
+
+						const laps = await page.evaluate( () => window.__kerb.race.laps );
+						const driver = new KeyboardDriver( page, line, { skill, seed: env.seed + race } );
+						const run = await drive( page, driver, { laps, timeout: laps * 70 + 30, until: ( s ) => s.finished } );
+
+						await page.waitForFunction( () => document.body.dataset.state === 'finished', null, { timeout: 20000 } ).catch( () => {} );
+						await page.waitForTimeout( 1500 );
+
+						const s = await page.evaluate( () => ( { ...window.__kerb.state(), standings: window.__kerb.standings() } ) );
+						const winner = s.standings[ 0 ];
+						const me = s.standings.find( ( c ) => c.player );
+
+						run.label = `${ label }-${ race }`;
+						run.errors = errors.slice();
+						run.position = s.position;
+						run.field = s.cars;
+						run.finishTime = me.finishTime;
+						run.gapToWinner = me.finishTime !== null && winner.finishTime !== null ? me.finishTime - winner.finishTime : null;
+						run.npcs = s.standings.filter( ( c ) => ! c.player ).map( ( c ) => ( { car: c.car, skill: c.skill, target: c.target, pace: c.pace, laps: c.lapTimes, respawns: c.respawns, hits: c.carHits } ) );
+						delete run.final;
+						runs.push( run );
+						results.push( `${ s.position }/${ s.cars }` );
+
+						check( checks, `${ run.label }: finishes the race`, s.finished, `${ run.completedLaps }/${ laps } laps` );
+						check( checks, `${ run.label }: results screen`, s.screen === 'finished', s.screen );
+						check( checks, `${ run.label }: never stuck`, run.stuckEvents === 0, `${ run.stuckEvents } stuck` );
+
+						if ( race === 1 ) await env.screenshot( page, `${ label }-results` );
+
+					}
+
+				} catch ( e ) {
+
+					const s = await page.evaluate( () => window.__kerb.state() ).catch( () => null );
+					const where = s ? `${ s.screen } / ${ s.phase }, lap ${ s.lap }, finished ${ s.finished }` : 'page gone';
+					check( checks, `${ label }: race ${ results.length + 1 } runs to the end`, false, `${ e.message.split( '\n' )[ 0 ] } (${ where })` );
+					await env.screenshot( page, `${ label }-failed` ).catch( () => {} );
+
+				}
+
+				check( checks, `${ label }: no page errors`, errors.length === 0, errors.slice( 0, 2 ).join( ' | ' ) );
+				checks.push( { name: `${ label }: finishing positions ${ results.join( ', ' ) }`, ok: true, detail: '' } );
+				await close();
+
+			}
+
+		}
+
+		return { checks, runs };
+
+	},
+
+	// The race flow around the driving: countdown, pause, results, race
+	// again, back to setup, opponents and car changes, switching track
+	'race-flow': async ( env ) => {
+
+		const checks = [];
+		const { page, errors, close } = await open( env, LAPTOP, { label: 'race-flow', prefs: { npcs: 3 } } );
+		const state = () => page.evaluate( () => window.__kerb.state() );
+
+		// Name the UI step that failed, rather than a bare timeout
+		const tap = ( selector ) => page.click( selector, { timeout: 5000 } ).catch( ( e ) => {
+
+			throw new Error( `clicking ${ selector }: ${ e.message.split( '\n' )[ 0 ] }` );
+
+		} );
+
+		// The opponents' cars load after the setup screen is up
+		await page.waitForFunction( () => window.__kerb.state().cars === 4, null, { timeout: 10000 } ).catch( () => {} );
+		let s = await state();
+		check( checks, 'setup screen lines up the field', s.screen === 'ready' && s.mode === 'race' && s.cars === 4, `${ s.screen } ${ s.mode } ${ s.cars } cars` );
+		await env.screenshot( page, 'race-flow-setup' );
+
+		await page.keyboard.down( 'KeyW' );
+		await page.waitForTimeout( 1500 );
+		s = await state();
+		check( checks, 'countdown holds the cars', s.phase === 'countdown' && s.speed < 0.2, `${ s.phase }, speed ${ s.speed.toFixed( 2 ) }` );
+		await page.waitForFunction( () => window.__kerb.state().phase === 'racing', null, { timeout: 5000 } );
+		await page.waitForTimeout( 1200 );
+		s = await state();
+		check( checks, 'GO releases the cars', s.speed > 3 && s.raceTime > 0.8, `speed ${ s.speed.toFixed( 1 ) }, race time ${ s.raceTime.toFixed( 2 ) }` );
+		await env.screenshot( page, 'race-flow-start' );
+
+		await page.keyboard.press( 'Escape' );
+		const a = await state();
+		await page.waitForTimeout( 1000 );
+		const b = await state();
+		check( checks, 'pause freezes the race clock', b.screen === 'paused' && Math.abs( b.raceTime - a.raceTime ) < 0.02, `+${ ( b.raceTime - a.raceTime ).toFixed( 3 ) }s` );
+
+		await tap( '#reset-btn' );
+		await page.waitForTimeout( 300 );
+		s = await state();
+		check( checks, 'reset car puts it back on track and resumes', s.screen === 'playing' && s.resets >= 1, `${ s.screen }, ${ s.resets } resets` );
+		await page.keyboard.up( 'KeyW' );
+
+		await page.keyboard.press( 'Escape' );
+		await tap( '.when-paused .restart-btn' );
+		await page.waitForTimeout( 400 );
+		s = await state();
+		check( checks, 'restart lines up again', s.phase === 'countdown' && s.lap === 1 && s.raceTime === 0, `${ s.phase }, lap ${ s.lap }, ${ s.raceTime.toFixed( 2 ) }s` );
+
+		await page.keyboard.press( 'Escape' );
+		await tap( '.when-paused .setup-btn' );
+		await page.waitForTimeout( 300 );
+		await tap( '.when-ready .npc-stepper [data-step="-1"]' );
+		await page.waitForTimeout( 800 );
+		s = await state();
+		check( checks, 'fewer opponents takes one off the grid', s.screen === 'ready' && s.cars === 3, `${ s.screen }, ${ s.cars } cars` );
+
+		await tap( '#car-btn' );
+		await tap( '.car-tile[data-car="firetruck"]' );
+		await page.waitForTimeout( 800 );
+		s = await state();
+		check( checks, 'picking a car swaps the player\'s car', s.car === 'firetruck', s.car );
+		await env.screenshot( page, 'race-flow-firetruck' );
+
+		for ( let i = 0; i < 2; i ++ ) await tap( '.when-ready .npc-stepper [data-step="-1"]' );
+		await page.waitForTimeout( 500 );
+		s = await state();
+		check( checks, 'no opponents is a time trial', s.mode === 'timetrial' && s.cars === 1 && ( await page.textContent( '#start-btn' ) ) === 'Drive', `${ s.mode }, ${ s.cars } cars` );
+
+		await Promise.all( [ page.waitForNavigation(), tap( '#track-picker button:has-text("Monza")' ) ] );
+		await page.waitForFunction( () => document.body.dataset.state === 'ready', null, { timeout: 30000 } );
+		s = await state();
+		check( checks, 'track picker loads Monza with the same car', s.track === 'monza' && s.car === 'firetruck', `${ s.track }, ${ s.car }` );
+		await env.screenshot( page, 'race-flow-monza' );
+
+		check( checks, 'race-flow: no page errors', errors.length === 0, errors.slice( 0, 3 ).join( ' | ' ) );
+		await close();
+
+		return { checks, runs: [] };
+
+	},
 
 	'custom-tracks': async ( env ) => {
 
@@ -278,7 +488,13 @@ export const SCENARIOS = {
 		const touch = ( type, points ) => cdp.send( 'Input.dispatchTouchEvent', { type, touchPoints: points.map( ( [ x, y ], id ) => ( { x, y, id } ) ) } );
 
 		// Start the game, then pinch outwards
-		await touch( 'touchStart', [ [ 195, 420 ] ] );
+		const start = await page.evaluate( () => {
+
+			const r = document.getElementById( 'start-btn' ).getBoundingClientRect();
+			return [ r.left + r.width / 2, r.top + r.height / 2 ];
+
+		} );
+		await touch( 'touchStart', [ start ] );
 		await touch( 'touchEnd', [] );
 		await touch( 'touchStart', [ [ 170, 420 ], [ 220, 420 ] ] );
 		for ( let i = 1; i <= 10; i ++ ) await touch( 'touchMove', [ [ 170 - i * 12, 420 ], [ 220 + i * 12, 420 ] ] );
@@ -310,6 +526,7 @@ export const SCENARIOS = {
 
 		const checks = [];
 		const context = await env.browser.newContext( { ...LAPTOP, offline: true } );
+		await presetStorage( context, settings() );
 		const page = await context.newPage();
 		const errors = [];
 		const requests = [];

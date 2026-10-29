@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<title>Car thumbnails</title>
+	<style>body { margin: 0; background: #1c2029; }</style>
+</head>
+<body>
+	<!-- Rendered by scripts/car-thumbs.mjs: every car in CarList.js, in order,
+	     into one transparent sprite sheet. Shows the result when opened. -->
+	<script type="module">
+
+		import * as THREE from 'three';
+		import { ColorMapGLTFLoader, getColormap } from '../js/Loader.js';
+		import { MODEL_URLS } from '../js/Assets.js';
+		import { CARS } from '../js/CarList.js';
+		import { THUMB } from '../js/CarThumbs.js';
+
+		const columns = THUMB.columns;
+		const rows = Math.ceil( CARS.length / columns );
+
+		const renderer = new THREE.WebGLRenderer( { antialias: true, alpha: true, preserveDrawingBuffer: true } );
+		renderer.setPixelRatio( 1 );
+		renderer.setSize( THUMB.width * columns, THUMB.height * rows );
+		renderer.setClearColor( 0x000000, 0 );
+		renderer.toneMapping = THREE.ACESFilmicToneMapping;
+		renderer.shadowMap.enabled = true;
+		renderer.setScissorTest( true );
+		document.body.appendChild( renderer.domElement );
+
+		const scene = new THREE.Scene();
+
+		const sun = new THREE.DirectionalLight( 0xffffff, 3 );
+		sun.position.set( 11.4, 15, - 5.3 );
+		scene.add( sun );
+		scene.add( new THREE.HemisphereLight( 0xc8d8e8, 0x7a8a5a, 2 ) );
+
+		// The game's view direction: 45° azimuth, 35° elevation
+		const camera = new THREE.OrthographicCamera( - 1, 1, 1, - 1, 0.1, 50 );
+		const viewDir = new THREE.Vector3( 9.27, 9.18, 9.27 ).normalize();
+
+		const loader = new ColorMapGLTFLoader();
+		while ( ! getColormap( 'cars' ).image || ! getColormap( 'starter' ).image ) await new Promise( ( resolve ) => setTimeout( resolve, 50 ) );
+
+		const box = new THREE.Box3();
+		const center = new THREE.Vector3();
+		const corner = new THREE.Vector3();
+
+		for ( let i = 0; i < CARS.length; i ++ ) {
+
+			const gltf = await loader.loadAsync( MODEL_URLS[ CARS[ i ].id ] );
+			const car = gltf.scene;
+
+			// Three-quarter front view, nose toward the bottom-left
+			car.rotation.y = Math.PI * 0.15;
+			scene.add( car );
+
+			// Fit the box's projection with a small margin
+			box.setFromObject( car );
+			box.getCenter( center );
+			camera.position.copy( center ).addScaledVector( viewDir, 20 );
+			camera.lookAt( center );
+			camera.updateMatrixWorld();
+
+			let halfX = 0, halfY = 0;
+
+			for ( let c = 0; c < 8; c ++ ) {
+
+				corner.set( c & 1 ? box.max.x : box.min.x, c & 2 ? box.max.y : box.min.y, c & 4 ? box.max.z : box.min.z );
+				corner.applyMatrix4( camera.matrixWorldInverse );
+				halfX = Math.max( halfX, Math.abs( corner.x ) );
+				halfY = Math.max( halfY, Math.abs( corner.y ) );
+
+			}
+
+			const aspect = THUMB.width / THUMB.height;
+			const half = Math.max( halfY, halfX / aspect ) * 1.08;
+			camera.left = - half * aspect;
+			camera.right = half * aspect;
+			camera.top = half;
+			camera.bottom = - half;
+			camera.updateProjectionMatrix();
+
+			const x = ( i % columns ) * THUMB.width;
+			const y = ( rows - 1 - Math.floor( i / columns ) ) * THUMB.height;
+			renderer.setViewport( x, y, THUMB.width, THUMB.height );
+			renderer.setScissor( x, y, THUMB.width, THUMB.height );
+			renderer.render( scene, camera );
+
+			scene.remove( car );
+
+		}
+
+		window.thumbs = renderer.domElement.toDataURL( 'image/webp', 0.9 );
+
+	</script>
+</body>
+</html>

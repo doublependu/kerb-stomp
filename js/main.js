@@ -1,21 +1,30 @@
 import * as THREE from 'three';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { LightProbeGrid } from 'three/addons/lighting/LightProbeGrid.js';
-import { LightProbeGridHelper } from 'three/addons/helpers/LightProbeGridHelper.js';
-import { createWorldSettings, createWorld, addBroadphaseLayer, addObjectLayer, enableCollision, registerAll, updateWorld, rigidBody, box, MotionType } from 'crashcat';
-import { Vehicle, MAX_SPEED } from './Vehicle.js';
+import { registerAll } from 'crashcat';
+import { MAX_SPEED } from './Vehicle.js';
 import { Camera } from './Camera.js';
 import { Controls } from './Controls.js';
-import { buildTrack, decodeCells, computeSpawnPosition, computeTrackBounds, TRACK_CELLS } from './Track.js';
-import { buildWallColliders, createSphereBody } from './Physics.js';
+import { buildTrack, computeTrackBounds, encodeCells } from './Track.js';
+import { centerline } from './TrackPath.js';
+import { resolveTrack, rememberTrack } from './Tracks.js';
+import { Race, STEP } from './Race.js';
+import { AIDriver, rng } from './AIDriver.js';
+import { planField } from './Difficulty.js';
+import { CARS, getCar } from './CarList.js';
 import { SmokeTrails } from './Particles.js';
 import { DriftMarks } from './DriftMarks.js';
 import { GameAudio } from './Audio.js';
-import { LapTimer } from './LapTimer.js';
-import { ColorMapGLTFLoader } from './Loader.js';
+import { loadBest, saveBest } from './LapTimer.js';
+import { Hud } from './Hud.js';
+import { ColorMapGLTFLoader, colormapLoaded } from './Loader.js';
 import { MODEL_URLS } from './Assets.js';
 import { PRESETS, detectTier, loadSetting, saveSetting, loadAutoTier, saveAutoTier, lowerTier, FrameMonitor } from './Quality.js';
 import { Shell, lockViewport } from './Shell.js';
+import { Settings } from './Settings.js';
+import { SunShadow } from './SunShadow.js';
+import { setLambert } from './Materials.js';
+import { Debris } from './Debris.js';
 
 const params = new URLSearchParams( window.location.search );
 
@@ -28,6 +37,12 @@ const VIRTUAL_FRAMES = PLAYTEST ? Math.max( 1, Number( params.get( 'frames' ) ) 
 
 lockViewport();
 
+const settings = new Settings();
+const track = resolveTrack( params );
+
+// Classic keeps the best-lap / drift-mark storage key it always had
+const trackKey = track.id === 'classic' ? null : track.id;
+
 let game = null;
 
 const shell = new Shell( {
@@ -35,6 +50,13 @@ const shell = new Shell( {
 	onPause: () => game.pause(),
 	onResume: () => game.resume(),
 	onQuality: ( setting ) => game.setQuality( setting ),
+	onCar: ( id ) => game.setCar( id ),
+	onNpcs: ( count ) => game.setNpcs( count ),
+	onTouch: ( scheme ) => game.setTouch( scheme ),
+	onTrack: ( id ) => game.setTrack( id ),
+	onRestart: () => game.restart(),
+	onSetup: () => game.setup(),
+	onReset: () => game.resetCar(),
 } );
 
 // Let the loading screen paint before a blocking step (track build, probe bake)
@@ -54,74 +76,72 @@ function nextPaint() {
 
 }
 
-const modelNames = [
-	'vehicle-truck-yellow', 'vehicle-truck-green', 'vehicle-truck-purple', 'vehicle-truck-red',
+// Models load once and are shared; vehicles get Godot's root_scale 0.5
+
+const loader = new ColorMapGLTFLoader();
+const modelCache = new Map();
+
+function loadModel( name, onProgress ) {
+
+	if ( ! modelCache.has( name ) ) {
+
+		modelCache.set( name, new Promise( ( resolve, reject ) => {
+
+			loader.load( MODEL_URLS[ name ], ( gltf ) => {
+
+				gltf.scene.traverse( ( child ) => {
+
+					if ( child.isMesh ) child.material.side = THREE.FrontSide;
+
+				} );
+
+				const car = CARS.find( ( c ) => c.id === name );
+				if ( car ) gltf.scene.scale.setScalar( 0.5 );
+
+				// Models are only drawable once their kit's colormap is in
+				const kit = car ? car.kit : name === 'debris' ? 'cars' : 'starter';
+				colormapLoaded( kit ).then( () => resolve( gltf.scene ) );
+
+			}, ( e ) => {
+
+				if ( onProgress && e.lengthComputable ) onProgress( 0.95 * e.loaded / e.total );
+
+			}, reject );
+
+		} ) );
+
+	}
+
+	return modelCache.get( name );
+
+}
+
+const TRACK_MODELS = [
 	'track-straight', 'track-corner', 'track-bump', 'track-finish',
 	'decoration-empty', 'decoration-forest', 'decoration-tents',
 ];
 
-async function loadModels( onProgress ) {
+// Everything the first frame needs: the track and the player's car. The
+// opponents' cars load after the setup screen is up.
+async function loadStartModels( onProgress ) {
 
-	const loader = new ColorMapGLTFLoader();
+	const names = [ ...TRACK_MODELS, settings.car ];
+	const fractions = new Array( names.length ).fill( 0 );
 	const models = {};
-	const fractions = new Array( modelNames.length ).fill( 0 );
 
-	const report = ( i, f ) => {
+	await Promise.all( names.map( async ( name, i ) => {
 
-		fractions[ i ] = f;
-		onProgress( fractions.reduce( ( a, b ) => a + b, 0 ) / fractions.length );
+		models[ name ] = await loadModel( name, ( f ) => {
 
-	};
+			fractions[ i ] = f;
+			onProgress( fractions.reduce( ( a, b ) => a + b, 0 ) / names.length );
 
-	const promises = modelNames.map( ( name, i ) =>
-		new Promise( ( resolve, reject ) => {
+		} );
 
-			loader.load( MODEL_URLS[ name ], ( gltf ) => {
+		fractions[ i ] = 1;
+		onProgress( fractions.reduce( ( a, b ) => a + b, 0 ) / names.length );
 
-				const meshes = [];
-				gltf.scene.traverse( ( child ) => {
-
-					if ( child.isMesh ) {
-
-						child.material.side = THREE.FrontSide;
-						meshes.push( child );
-
-					}
-
-				} );
-
-				// Godot imports vehicle models at root_scale=0.5
-				if ( name.startsWith( 'vehicle-' ) ) {
-
-					gltf.scene.scale.setScalar( 0.5 );
-
-				}
-
-				if ( meshes.length === 1 ) {
-
-					const mesh = meshes[ 0 ];
-					mesh.removeFromParent();
-					models[ name ] = mesh;
-
-				} else {
-
-					models[ name ] = gltf.scene;
-
-				}
-
-				report( i, 1 );
-				resolve();
-
-			}, ( e ) => {
-
-				if ( e.lengthComputable ) report( i, 0.95 * e.loaded / e.total );
-
-			}, reject );
-
-		} )
-	);
-
-	await Promise.all( promises );
+	} ) );
 
 	return models;
 
@@ -169,13 +189,14 @@ async function init() {
 	dirLight.position.set( 11.4, 15, -5.3 );
 	dirLight.castShadow = true;
 	dirLight.shadow.mapSize.setScalar( boot.shadowMapSize );
-	dirLight.shadow.camera.near = 0.5;
-	dirLight.shadow.camera.far = 60;
 	dirLight.shadow.radius = 4;
 	scene.add( dirLight );
 
+	const sun = new SunShadow( dirLight );
+	scene.add( sun.target );
+
 	const hemiLight = new THREE.HemisphereLight( 0xc8d8e8, 0x7a8a5a, 2 );
-	hemiLight.position.copy( dirLight.position )
+	hemiLight.position.copy( dirLight.position );
 	scene.add( hemiLight );
 
 	const cam = new Camera();
@@ -186,6 +207,7 @@ async function init() {
 	// also catches the stale sizes iOS reports mid-rotation.
 
 	let probes = null;
+	let debris = null;
 	let fogNear = 30, fogFar = 55;
 	let viewWidth = 0, viewHeight = 0, viewPixelRatio = 0;
 
@@ -206,6 +228,7 @@ async function init() {
 		renderer.setPixelRatio( pixelRatio );
 		renderer.setSize( width, height, false );
 		cam.setViewport( width, height );
+		sun.fit( cam.footprint );
 
 		scene.fog.near = fogNear + cam.extraDistance;
 		scene.fog.far = fogFar + cam.extraDistance;
@@ -233,10 +256,14 @@ async function init() {
 
 			}
 
+			sun.fit( cam.footprint );
+
 		}
 
 		// Materials recompile once without the probe grid (a single hitch)
 		if ( probes ) probes.visible = preset.probes > 0;
+		setLambert( scene, preset.lambert );
+		if ( debris ) debris.lambert = preset.lambert;
 
 		resize();
 
@@ -252,51 +279,33 @@ async function init() {
 	shell.setProgress( 0, 'Loading models…' );
 
 	registerAll();
-	const models = await loadModels( ( f ) => shell.setProgress( f * 0.8, 'Loading models… ' + Math.round( f * 100 ) + '%' ) );
+	const models = await loadStartModels( ( f ) => shell.setProgress( f * 0.8, 'Loading models… ' + Math.round( f * 100 ) + '%' ) );
 	performance.mark( 'kerb:models' );
 
 	shell.setProgress( 0.82, 'Building track…' );
 	await nextPaint();
 
-	const mapParam = params.get( 'map' );
-	let customCells = null;
-	let spawn = null;
-
-	if ( mapParam ) {
-
-		try {
-
-			customCells = decodeCells( mapParam );
-			spawn = computeSpawnPosition( customCells );
-
-		} catch ( e ) {
-
-			console.warn( 'Invalid map parameter, using default track' );
-
-		}
-
-	}
-
-	// Compute track bounds and size physics/shadows to fit
-	const bounds = computeTrackBounds( customCells );
+	// Classic is drawn from the Starter Kit's hand-placed layout (null cells)
+	const classic = track.id === 'classic';
+	const bounds = computeTrackBounds( classic ? null : track.cells );
 	const hw = bounds.halfWidth;
 	const hd = bounds.halfDepth;
 	const groundSize = Math.max( hw, hd ) * 2 + 20;
-
-	const shadowExtent = Math.max( hw, hd ) + 10;
-	dirLight.shadow.camera.left = - shadowExtent;
-	dirLight.shadow.camera.right = shadowExtent;
-	dirLight.shadow.camera.top = shadowExtent;
-	dirLight.shadow.camera.bottom = - shadowExtent;
-	dirLight.shadow.camera.updateProjectionMatrix();
 
 	fogNear = groundSize * 0.4;
 	fogFar = groundSize * 0.8;
 	scene.fog.near = fogNear + cam.extraDistance;
 	scene.fog.far = fogFar + cam.extraDistance;
 
-	buildTrack( scene, models, customCells );
+	const trackGroups = buildTrack( scene, models, classic ? null : track.cells, PLAYTEST && params.has( 'chunk' ) ? { chunk: Number( params.get( 'chunk' ) ) } : {} );
 	performance.mark( 'kerb:track' );
+
+	// The simulation, with the player's car on the start line
+
+	const line = centerline( track.cells );
+	const race = new Race( { cells: track.cells, line, classic, ai: track.ai } );
+	const player = race.addCar( getCar( settings.car ), models[ settings.car ], { player: true, name: 'You' } );
+	scene.add( player.vehicle.container );
 
 	// Probes (grid density scales with the tier; low skips the bake and relies
 	// on the hemisphere light)
@@ -318,121 +327,224 @@ async function init() {
 		scene.add( probes );
 		performance.mark( 'kerb:probes' );
 
-		// scene.add( new LightProbeGridHelper( probes, 0.5 ) );
-
 	}
 
-	//
+	setLambert( scene, preset.lambert );
 
-	const worldSettings = createWorldSettings();
-	worldSettings.gravity = [ 0, - 9.81, 0 ];
-
-	const BPL_MOVING = addBroadphaseLayer( worldSettings );
-	const BPL_STATIC = addBroadphaseLayer( worldSettings );
-	const OL_MOVING = addObjectLayer( worldSettings, BPL_MOVING );
-	const OL_STATIC = addObjectLayer( worldSettings, BPL_STATIC );
-
-	enableCollision( worldSettings, OL_MOVING, OL_STATIC );
-	enableCollision( worldSettings, OL_MOVING, OL_MOVING );
-
-	const world = createWorld( worldSettings );
-	world._OL_MOVING = OL_MOVING;
-	world._OL_STATIC = OL_STATIC;
-
-	buildWallColliders( world, null, customCells );
-
-	const roadHalf = groundSize / 2;
-	const groundBody = rigidBody.create( world, {
-		shape: box.create( { halfExtents: [ roadHalf, 0.01, roadHalf ] } ),
-		motionType: MotionType.STATIC,
-		objectLayer: OL_STATIC,
-		position: [ bounds.centerX, - 0.125, bounds.centerZ ],
-		friction: 5.0,
-		restitution: 0.0,
-	} );
-
-	const sphereBody = createSphereBody( world, spawn ? spawn.position : null );
-
-	const vehicle = new Vehicle();
-	vehicle.rigidBody = sphereBody;
-	vehicle.physicsWorld = world;
-
-	if ( spawn ) {
-
-		const [ sx, sy, sz ] = spawn.position;
-		vehicle.spherePos.set( sx, sy, sz );
-		vehicle.prevModelPos.set( sx, 0, sz );
-		vehicle.container.rotation.y = spawn.angle;
-		vehicle.spawnPosition = spawn.position;
-		vehicle.spawnAngle = spawn.angle;
-
-	}
-
-	const vehicleGroup = vehicle.init( models[ 'vehicle-truck-yellow' ] );
-	scene.add( vehicleGroup );
-
-	dirLight.target = vehicleGroup;
-
-	const controls = new Controls();
+	const controls = new Controls( settings.touch );
+	const hud = new Hud();
 
 	const particles = new SmokeTrails( scene );
-	const driftMarks = new DriftMarks( scene, mapParam );
+	debris = new Debris( scene, tier === 'low' ? 6 : 14 );
+	debris.lambert = preset.lambert;
+	const driftMarks = new DriftMarks( scene, trackKey );
+	const npcMarks = new DriftMarks( scene, null, { shared: true } );
 
 	// Audio is initialised after the start screen is up (see the end of
 	// init): it renders its synth buffers up front (~170ms of main thread),
 	// and nothing can play before the first gesture anyway.
 	const audio = new GameAudio();
 
-	const lapTimer = new LapTimer( customCells, mapParam );
-
-	const _forward = new THREE.Vector3();
-	const _camLead = new THREE.Vector3();
-
+	let bestLap = loadBest( trackKey );
 	let wallImpacts = 0;
 	let maxWallImpact = 0;
+	let shake = 0;
+	const hitTimes = new Map();
+	const _point = new THREE.Vector3();
 
-	const contactListener = {
-		onContactAdded( bodyA, bodyB ) {
+	race.events.onWallHit = ( car, speed, ground ) => {
 
-			if ( bodyA !== sphereBody && bodyB !== sphereBody ) return;
+		if ( car.player ) {
 
-			_forward.set( 0, 0, 1 ).applyQuaternion( vehicle.container.quaternion );
-			_forward.y = 0;
-			_forward.normalize();
+			audio.playImpact( speed );
 
-			const impactVelocity = Math.abs( vehicle.modelVelocity.dot( _forward ) );
-			audio.playImpact( impactVelocity );
-
-			if ( bodyA !== groundBody && bodyB !== groundBody ) {
+			if ( ! ground ) {
 
 				wallImpacts ++;
-				maxWallImpact = Math.max( maxWallImpact, impactVelocity );
+				maxWallImpact = Math.max( maxWallImpact, speed );
 
 			}
 
+		} else if ( ! ground && speed > 1.5 ) {
+
+			audio.playImpact( speed * 0.8, _point.copy( car.vehicle.container.position ) );
+
 		}
+
 	};
+
+	race.events.onCarHit = ( a, b, speed, x, z ) => {
+
+		// Sustained shoving re-triggers contact every step: one sound per
+		// pair every quarter second
+		const key = a.vehicle.container.id + ':' + b.vehicle.container.id;
+		const last = hitTimes.get( key ) || - 1;
+		if ( speed < 0.6 || race.time - last < 0.25 ) return;
+		hitTimes.set( key, race.time );
+
+		const withPlayer = a.player || b.player;
+		if ( withPlayer ) audio.playImpact( speed * 1.2 );
+		else audio.playImpact( speed, _point.set( x, 0.5, z ) );
+
+		if ( speed > 2 ) particles.puff( x, 0.3, z, Math.min( 10, Math.round( speed * 2 ) ) );
+		if ( speed > 3.5 ) debris.burst( x, z, speed );
+		if ( withPlayer ) shake = Math.min( 0.35, shake + speed * 0.04 );
+
+	};
+
+	race.events.onLap = ( car ) => {
+
+		if ( ! car.player ) return;
+
+		const isBest = bestLap === null || car.counter.lastLap < bestLap;
+
+		if ( isBest ) {
+
+			bestLap = car.counter.lastLap;
+			saveBest( trackKey, bestLap );
+
+		}
+
+		hud.flashLap( isBest );
+
+	};
+
+	race.events.onFinish = ( car ) => {
+
+		if ( ! car.player ) return;
+
+		// A gentle lap of honour behind the results
+		const cooldown = new AIDriver( line, { skill: 0.6, seed: 3 } );
+		cooldown.pace = 0.55;
+		car.driver = cooldown;
+
+	};
+
+	// The opponents: a field planned for the settings, with models loading
+	// after the setup screen is up. Kept for "race again"; replaced when the
+	// count or the player's car changes.
+
+	let field = null;
+	let fieldToken = 0;
+	let fieldDirty = true;
+
+	function npcCount() {
+
+		return track.raceable ? settings.npcs : 0;
+
+	}
+
+	async function buildField() {
+
+		const token = ++ fieldToken;
+		const count = npcCount();
+		const random = rng( ( Date.now() & 0xffff ) + count );
+		const plan = planField( count, random );
+
+		// Different cars from each other and from the player's
+		const pool = CARS.filter( ( c ) => c.id !== settings.car );
+		const defs = plan.map( () => pool.splice( Math.floor( random() * pool.length ), 1 )[ 0 ] );
+
+		shell.setBusy( count > 0 );
+		const loaded = await Promise.all( defs.map( ( def ) => loadModel( def.id ) ) );
+		if ( token !== fieldToken ) return false;
+
+		for ( const car of race.cars.slice() ) {
+
+			if ( car.player ) continue;
+			scene.remove( car.vehicle.container );
+			race.removeCar( car );
+
+		}
+
+		field = plan.map( ( p, i ) => {
+
+			const driver = new AIDriver( line, { seed: Math.floor( random() * 1e6 ), aggression: p.aggression } );
+			const car = race.addCar( defs[ i ], loaded[ i ], { driver } );
+			car.paceFactor = p.factor;
+			setLambert( car.vehicle.container, preset.lambert );
+			scene.add( car.vehicle.container );
+			return car;
+
+		} );
+
+		fieldDirty = false;
+		shell.setBusy( false );
+		return true;
+
+	}
+
+	// Line everyone up for the current settings (grid, or the time trial
+	// spawn) and show it behind the setup screen. The field is paced from
+	// the player's best lap so far.
+	function lineUp() {
+
+		player.driver = null;
+
+		for ( const car of field || [] ) {
+
+			driftMarks.lift( car.vehicle );
+			npcMarks.lift( car.vehicle );
+
+		}
+
+		driftMarks.lift( player.vehicle );
+		race.aimField( bestLap ?? track.par, bestLap !== null );
+
+		if ( field && field.length ) race.setup( 'race', [ ...field, player ], track.laps );
+		else race.setup( 'timetrial' );
+
+		hud.setMode( race.mode );
+		hitTimes.clear();
+		snapCamera();
+
+	}
+
+	async function refreshField() {
+
+		if ( fieldDirty && await buildField() === false ) return;
+		lineUp();
+
+	}
+
+	const _forward = new THREE.Vector3();
+	const _camLead = new THREE.Vector3();
+	const _camTarget = new THREE.Vector3();
+
+	function snapCamera() {
+
+		cam.initialized = false;
+		_camTarget.copy( player.vehicle.container.position ).y += 0.5;
+		cam.update( 0, _camTarget, _camLead.set( 0, 0, 0 ) );
+		sun.update( cam.lookPoint );
+		needsRender = true;
+
+	}
 
 	// Warm up shaders so the first driven frames don't hitch
 
 	shell.setProgress( 0.95, 'Compiling shaders…' );
 	await nextPaint();
 
-	cam.update( 0, vehicle.spherePos, _camLead );
+	cam.update( 0, player.vehicle.spherePos, _camLead );
+	sun.update( cam.lookPoint );
 	performance.mark( 'kerb:setup' );
 	await renderer.compileAsync( scene, cam.camera );
 	performance.mark( 'kerb:compiled' );
 
-	// Game state: the shell owns the screen state (ready / playing / paused);
-	// the loop only simulates while not paused.
+	// Game state: the shell owns the screen state (ready / playing / paused /
+	// finished); the loop only simulates while playing or showing results.
 
 	const timer = new THREE.Timer();
 	const frameMonitor = new FrameMonitor();
 	const frameStats = new FrameMonitor();
+	const stepStats = new FrameMonitor();
 	let warmupFrames = 0;
 	let adaptDone = qualitySetting !== 'auto';
 	let needsRender = true;
 	let pendingDt = 0;
+	let lastCountdown = null;
+	let resultsTimer = 0;
 
 	function pause() {
 
@@ -456,16 +568,41 @@ async function init() {
 
 	}
 
+	let starting = false;
+
+	async function go() {
+
+		if ( starting ) return;
+		starting = true;
+
+		await refreshField();
+		starting = false;
+
+		// Keys stay held: W both starts and drives, as it always has
+		lastCountdown = null;
+		wallImpacts = 0;
+		maxWallImpact = 0;
+		race.start();
+		audio.setPaused( false );
+		shell.play();
+		warmupFrames = 0;
+
+	}
+
 	game = {
 
-		start() {
-
-			warmupFrames = 0;
-
-		},
-
+		start: go,
+		restart: go,
 		pause,
 		resume,
+
+		setup() {
+
+			audio.setPaused( true );
+			shell.setup();
+			refreshField();
+
+		},
 
 		setQuality( setting ) {
 
@@ -476,6 +613,61 @@ async function init() {
 			adaptDone = setting !== 'auto';
 			applyPreset();
 			needsRender = true;
+
+		},
+
+		async setCar( id ) {
+
+			settings.setCar( id );
+			shell.setCar( id );
+
+			const def = getCar( id );
+			const model = await loadModel( id );
+			if ( settings.car !== id ) return;
+
+			player.def = def;
+			player.vehicle.init( model, def.bodyY );
+			setLambert( player.vehicle.container, preset.lambert );
+
+			// An opponent may have had this car
+			if ( field && field.some( ( c ) => c.def.id === id ) ) fieldDirty = true;
+			if ( shell.state === 'ready' ) refreshField();
+			needsRender = true;
+
+		},
+
+		setNpcs( count ) {
+
+			settings.setNpcs( count );
+			shell.setNpcs( settings.npcs, track.raceable );
+			fieldDirty = true;
+			if ( shell.state === 'ready' ) refreshField();
+
+		},
+
+		setTouch( scheme ) {
+
+			settings.setTouch( scheme );
+			controls.setScheme( scheme );
+			shell.setTouch( scheme );
+
+		},
+
+		setTrack( id ) {
+
+			rememberTrack( id );
+			const next = new URLSearchParams( location.search );
+			next.delete( 'map' );
+			next.set( 'track', id );
+			location.search = next.toString();
+
+		},
+
+		resetCar() {
+
+			if ( shell.state === 'paused' ) resume();
+			race.respawn( player );
+			driftMarks.lift( player.vehicle );
 
 		},
 
@@ -523,37 +715,46 @@ async function init() {
 
 	}
 
-	// Fixed-step simulation. The truck's drive torque fights per-step physics
-	// damping, so a variable step made it accelerate ~10% harder at 240Hz than
-	// at 30fps (scripts/playtest/framerate.mjs). 60Hz steps keep the feel of
-	// the original 60fps tuning everywhere; the truck is drawn interpolated
-	// between the last two steps so faster displays stay smooth, and slow
-	// devices catch up with several steps per frame down to 15fps.
+	// Fixed-step simulation (Race.STEP, 60Hz). The truck's drive torque fights
+	// per-step physics damping, so a variable step made it accelerate ~10%
+	// harder at 240Hz than at 30fps (scripts/playtest/framerate.mjs). Cars
+	// are drawn interpolated between the last two steps so faster displays
+	// stay smooth, and slow devices catch up with several steps per frame
+	// down to 15fps.
 
-	const STEP = 1 / 60;
 	const MAX_STEPS = 4;
+	const RESULTS_DELAY = 1.2;
 	let accumulator = 0;
-
-	const prevPosition = vehicle.container.position.clone();
-	const prevQuaternion = vehicle.container.quaternion.clone();
-	const simPosition = new THREE.Vector3();
-	const simQuaternion = new THREE.Quaternion();
-	const _camTarget = new THREE.Vector3();
 
 	function step( input ) {
 
-		prevPosition.copy( vehicle.container.position );
-		prevQuaternion.copy( vehicle.container.quaternion );
+		const t0 = performance.now();
+		race.step( input );
+		stepStats.push( ( performance.now() - t0 ) / 1000 );
 
-		updateWorld( world, contactListener, STEP );
+		for ( const car of race.cars ) {
 
-		vehicle.update( STEP, input );
+			particles.emit( car.vehicle );
+			if ( car.player ) driftMarks.update( STEP, car.vehicle );
+			else npcMarks.update( STEP, car.vehicle );
 
-		particles.update( STEP, vehicle );
-		driftMarks.update( STEP, vehicle );
+		}
 
-		const hasInput = input.touchActive || Math.abs( input.x ) > 0.05 || Math.abs( input.z ) > 0.05;
-		lapTimer.update( STEP, vehicle.spherePos, hasInput );
+		particles.update( STEP );
+
+		// 3 · 2 · 1 · GO
+		if ( race.phase === 'countdown' ) {
+
+			const n = Math.ceil( race.countdown );
+			if ( n !== lastCountdown ) audio.beep( 440, 0.15 );
+			lastCountdown = n;
+
+		} else if ( lastCountdown !== null && race.mode === 'race' ) {
+
+			audio.beep( 880, 0.45 );
+			lastCountdown = null;
+
+		}
 
 	}
 
@@ -568,29 +769,50 @@ async function init() {
 
 		}
 
+		const alpha = accumulator / STEP;
+
+		for ( const car of race.cars ) {
+
+			const container = car.vehicle.container;
+			car.simPosition = ( car.simPosition || new THREE.Vector3() ).copy( container.position );
+			car.simQuaternion = ( car.simQuaternion || new THREE.Quaternion() ).copy( container.quaternion );
+			container.position.lerpVectors( car.prevPosition, car.simPosition, alpha );
+			container.quaternion.slerpQuaternions( car.prevQuaternion, car.simQuaternion, alpha );
+
+			// Respawned cars blink while they can't be hit
+			container.visible = ! ( car.ghost > 0 && Math.floor( car.ghost * 10 ) % 2 );
+
+		}
+
+		const vehicle = player.vehicle;
 		const container = vehicle.container;
-		simPosition.copy( container.position );
-		simQuaternion.copy( container.quaternion );
-
-		container.position.lerpVectors( prevPosition, simPosition, accumulator / STEP );
-		container.quaternion.slerpQuaternions( prevQuaternion, simQuaternion, accumulator / STEP );
-
-		dirLight.position.set(
-			container.position.x + 11.4,
-			15,
-			container.position.z - 5.3
-		);
-
 		const mv = vehicle.modelVelocity;
 		_camLead.set( 0, 0, 1 ).applyQuaternion( container.quaternion ).multiplyScalar( Math.sqrt( mv.x * mv.x + mv.z * mv.z ) );
 		_camTarget.copy( container.position ).y += 0.5;
 		cam.update( frameDt, _camTarget, _camLead );
-		audio.update( frameDt, vehicle.linearSpeed / MAX_SPEED, input.z, vehicle.driftIntensity );
+
+		// A jolt on hard hits
+		if ( shake > 0.005 ) {
+
+			cam.camera.position.x += ( Math.random() - 0.5 ) * shake;
+			cam.camera.position.y += ( Math.random() - 0.5 ) * shake;
+			shake *= Math.exp( - frameDt * 10 );
+
+		}
+
+		sun.update( cam.lookPoint );
+		debris.update( frameDt );
+		audio.update( frameDt, vehicle.linearSpeed / MAX_SPEED, vehicle.inputZ, vehicle.driftIntensity );
+		hud.update( race, bestLap );
 
 		renderer.render( scene, cam.camera );
 
-		container.position.copy( simPosition );
-		container.quaternion.copy( simQuaternion );
+		for ( const car of race.cars ) {
+
+			car.vehicle.container.position.copy( car.simPosition );
+			car.vehicle.container.quaternion.copy( car.simQuaternion );
+
+		}
 
 	}
 
@@ -613,7 +835,7 @@ async function init() {
 		const resized = resize();
 		const input = controls.update();
 
-		if ( shell.state === 'ready' && input.anyButton ) {
+		if ( shell.state === 'ready' && input.anyButton && shell.view === 'setup' ) {
 
 			shell.start();
 
@@ -624,22 +846,44 @@ async function init() {
 
 		}
 
-		if ( shell.state === 'paused' || shell.state === 'error' ) {
+		if ( input.reset && shell.state === 'playing' ) game.resetCar();
 
-			if ( resized || needsRender ) renderer.render( scene, cam.camera );
-			needsRender = false;
+		if ( shell.state === 'playing' || shell.state === 'finished' ) {
+
+			if ( shell.state === 'playing' ) {
+
+				adaptQuality( frameDt );
+				frameStats.push( frameDt );
+
+			}
+
+			for ( let i = 0; i < VIRTUAL_FRAMES; i ++ ) frame( frameDt / VIRTUAL_FRAMES, input );
+
+			// Results come up a moment after the player crosses the line (race
+			// time, so a pause in between only delays them), then fill in as
+			// the rest of the field finishes
+			const resultsDue = shell.state === 'playing' && player.finished && race.time - player.finishTime > RESULTS_DELAY;
+
+			if ( resultsDue || ( shell.state === 'finished' && ( resultsTimer -= frameDt ) <= 0 ) ) {
+
+				shell.showResults( race );
+				resultsTimer = 0.5;
+
+			}
+
 			return;
 
 		}
 
-		if ( shell.state === 'playing' ) {
+		// Menus: draw only when something changed
+		if ( resized || needsRender ) {
 
-			adaptQuality( frameDt );
-			frameStats.push( frameDt );
+			if ( resized ) snapCamera();
+			renderer.render( scene, cam.camera );
 
 		}
 
-		for ( let i = 0; i < VIRTUAL_FRAMES; i ++ ) frame( frameDt / VIRTUAL_FRAMES, input );
+		needsRender = false;
 
 	}
 
@@ -648,13 +892,34 @@ async function init() {
 		const _projected = new THREE.Vector3();
 
 		window.__kerb = {
-			cells: customCells || TRACK_CELLS,
-			spawn: spawn || { position: vehicle.spawnPosition, angle: vehicle.spawnAngle },
+			three: { THREE, scene, renderer, camera: cam.camera, dirLight, trackGroups },
+			race,
+			cells: track.cells,
+			spawn: race.spawn,
 			// World point → normalised device coords, to check what's on screen
 			project( x, y, z ) {
 
 				_projected.set( x, y, z ).project( cam.camera );
 				return [ _projected.x, _projected.y ];
+
+			},
+			// Hide parts of the scene to attribute frame cost (scripts/bench.mjs)
+			toggle( part, visible ) {
+
+				if ( part === 'shadows' ) {
+
+					dirLight.castShadow = visible;
+
+				} else if ( part === 'cars' ) {
+
+					for ( const car of race.cars ) car.vehicle.container.visible = visible;
+
+				} else {
+
+					const group = { decorations: trackGroups.decoGroup, track: trackGroups.trackPieceGroup }[ part ];
+					if ( group ) group.visible = visible;
+
+				}
 
 			},
 			// GPU-inclusive cost per frame: rAF intervals are vsync-quantised,
@@ -680,30 +945,46 @@ async function init() {
 			},
 			state() {
 
+				const vehicle = player.vehicle;
 				_forward.set( 0, 0, 1 ).applyQuaternion( vehicle.container.quaternion );
 				const canvas = renderer.domElement;
+				const counter = player.counter;
 
 				return {
 					t: performance.now(),
 					screen: shell.state,
+					track: track.id,
+					car: settings.car,
+					touch: settings.touch,
+					mode: race.mode,
+					phase: race.phase,
+					raceTime: race.time,
+					laps: race.laps,
+					position: race.position( player ),
+					cars: race.cars.length,
+					finished: player.finished,
 					x: vehicle.spherePos.x,
 					y: vehicle.spherePos.y,
 					z: vehicle.spherePos.z,
 					heading: Math.atan2( _forward.x, _forward.z ),
 					speed: Math.hypot( vehicle.sphereVel.x, vehicle.sphereVel.z ),
 					linearSpeed: vehicle.linearSpeed,
-					lap: lapTimer.lap,
-					lapTime: lapTimer.currentLapTime,
-					lastLap: lapTimer.lastLap,
-					bestLap: lapTimer.bestLap,
-					timerRunning: lapTimer.running,
-					visited: lapTimer.visitedCells.size,
-					required: lapTimer.requiredCells.size,
+					lap: counter.lap,
+					lapTime: counter.currentLapTime,
+					lastLap: counter.lastLap,
+					bestLap,
+					lapTimes: player.lapTimes,
+					timerRunning: counter.running,
+					visited: counter.visitedCells.size,
+					required: counter.requiredCells.size,
 					wallImpacts,
 					maxWallImpact,
+					carHits: player.carHits,
 					resets: vehicle.resets,
 					frameP50: frameStats.percentile( 0.5 ),
 					frameP95: frameStats.percentile( 0.95 ),
+					stepP50: stepStats.percentile( 0.5 ),
+					stepP95: stepStats.percentile( 0.95 ),
 					tier,
 					qualitySetting,
 					gpu: detected.gpu,
@@ -721,16 +1002,56 @@ async function init() {
 				};
 
 			},
+			standings() {
+
+				return race.standings().map( ( car ) => ( {
+					name: car.name,
+					car: car.def.id,
+					player: car.player,
+					skill: car.driver && ! car.player ? car.driver.skill : null,
+					target: car.targetLap,
+					pace: car.driver ? car.driver.pace : null,
+					lap: car.counter.lap,
+					lapTimes: car.lapTimes,
+					distance: car.distance,
+					finished: car.finished,
+					finishTime: car.finishTime,
+					respawns: car.respawns,
+					carHits: car.carHits,
+				} ) );
+
+			},
 		};
 
 	}
+
+	if ( params.has( 'tune' ) && import.meta.env.MODE !== 'offline' ) import( './Tune.js' ).then( ( { tune } ) => tune( race ) );
+
+	// The setup screen
+
+	shell.buildPickers( track, encodeCells( track.cells ) );
+	shell.setCar( settings.car );
+	shell.setNpcs( settings.npcs, track.raceable );
+	shell.setTouch( settings.touch );
+
+	race.setup( 'timetrial' );
+	hud.setMode( 'timetrial' );
+	snapCamera();
+
+	// Pick a car first, the first time round
+	if ( ! settings.hasCar ) shell.setView( 'cars' );
 
 	shell.ready();
 	performance.mark( 'kerb:interactive' );
 
 	requestAnimationFrame( animate );
 
-	setTimeout( () => audio.init( cam.camera, vehicleGroup ), 0 );
+	setTimeout( () => audio.init( cam.camera, player.vehicle.container, scene ), 0 );
+
+	// Opponents (and crash debris) load in the background behind the setup
+	// screen
+	refreshField();
+	loadModel( 'debris' ).then( ( model ) => debris.setModel( model ) ).catch( () => {} );
 
 }
 

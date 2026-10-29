@@ -168,7 +168,7 @@ export class KeyboardDriver extends BaseDriver {
 		// horizon (speed · brakeLead metres ahead) and they're too fast for it
 		let throttle = 1;
 		const brakeAt = proj.s + p.speed * s.brakeLead;
-		const sharp = this.line.turnAhead( brakeAt, 5 ) > 1.0;
+		const sharp = Math.abs( this.line.turnAhead( brakeAt, 5 ) ) > 1.0;
 
 		if ( sharp && p.speed > s.cornerSpeed && this.random() > s.forgetBrake ) {
 
@@ -219,15 +219,40 @@ export class KeyboardDriver extends BaseDriver {
 
 }
 
-// Touch: the joystick points the truck in a world direction (the game maps it
-// through the 45° camera) with automatic throttle. The thumb rests at an anchor
-// and drags toward where the driver wants to go.
+// Shared by the touch drivers: tap a DOM element's centre, and find the
+// centres of the touch controls
+async function centreOf( page, selector ) {
+
+	return page.evaluate( ( sel ) => {
+
+		const r = document.querySelector( sel ).getBoundingClientRect();
+		return [ r.left + r.width / 2, r.top + r.height / 2 ];
+
+	}, selector );
+
+}
+
+// Should the driver slow for a sharp corner coming up? (the keyboard bot's
+// braking judgement)
+function wantsToSlow( driver, proj, p ) {
+
+	const s = driver.skill;
+	const brakeAt = proj.s + p.speed * s.brakeLead;
+	const sharp = Math.abs( driver.line.turnAhead( brakeAt, 5 ) ) > 1.0;
+	return sharp && p.speed > s.cornerSpeed && driver.random() > s.forgetBrake;
+
+}
+
+// Touch joystick: a fixed base low in the middle. The thumb drags from its
+// centre toward where the driver wants to go (the game maps it through the
+// 45° camera), and further out to go faster: flat out past the base's edge,
+// eased back for sharp corners.
 export class TouchDriver extends BaseDriver {
 
 	constructor( page, line, options ) {
 
 		super( page, line, options );
-		this.input = 'touch';
+		this.input = 'touch-joystick';
 		this.cdp = null;
 		this.anchor = null;
 		this.thumb = null;
@@ -238,18 +263,19 @@ export class TouchDriver extends BaseDriver {
 	async start() {
 
 		this.cdp = await this.page.context().newCDPSession( this.page );
-		const { width, height } = await this.page.evaluate( () => ( { width: innerWidth, height: innerHeight } ) );
 
-		// Tap to dismiss the start screen, then put the thumb down
-		await this.touch( 'touchStart', width / 2, height / 2 );
+		// Tap Race / Drive on the setup screen, then put the thumb down
+		const [ x, y ] = await centreOf( this.page, '#start-btn' );
+		await this.touch( 'touchStart', x, y );
 		await this.touch( 'touchEnd' );
-		await this.place( width, height );
+		await this.page.waitForFunction( () => document.body.dataset.state === 'playing', null, { timeout: 15000 } );
+		await this.place();
 
 	}
 
-	async place( width, height ) {
+	async place() {
 
-		this.anchor = [ width * 0.5, height * 0.72 ];
+		this.anchor = await centreOf( this.page, '.joy-base' );
 		this.thumb = this.anchor.slice();
 		await this.touch( 'touchStart', ...this.anchor );
 		this.touching = true;
@@ -278,8 +304,9 @@ export class TouchDriver extends BaseDriver {
 		const wx = Math.sin( heading ), wz = Math.cos( heading );
 		const jx = ( wx - wz ) * Math.SQRT1_2;
 		const jy = ( wx + wz ) * Math.SQRT1_2;
+		const reach = wantsToSlow( this, proj, p ) ? 36 : 66;
 
-		const thumb = [ this.anchor[ 0 ] + jx * 48, this.anchor[ 1 ] + jy * 48 ];
+		const thumb = [ this.anchor[ 0 ] + jx * reach, this.anchor[ 1 ] + jy * reach ];
 
 		if ( Math.hypot( thumb[ 0 ] - this.thumb[ 0 ], thumb[ 1 ] - this.thumb[ 1 ] ) > 1.5 ) {
 
@@ -292,12 +319,12 @@ export class TouchDriver extends BaseDriver {
 
 	}
 
-	// After a rotation the anchor may be off-screen: lift and put the thumb back
+	// After a rotation the joystick moves: lift and put the thumb back
 	async replace() {
 
 		if ( this.touching ) await this.touch( 'touchEnd' );
-		const { width, height } = await this.page.evaluate( () => ( { width: innerWidth, height: innerHeight } ) );
-		await this.place( width, height );
+		await this.page.waitForTimeout( 100 );
+		await this.place();
 
 	}
 
@@ -305,6 +332,107 @@ export class TouchDriver extends BaseDriver {
 
 		if ( this.touching ) await this.touch( 'touchEnd' );
 		this.touching = false;
+
+	}
+
+}
+
+// Touch pads: the left thumb slides sideways to steer (analog, proportional
+// to the heading error, with thumb wobble), the right one up for throttle,
+// back to centre to lift and down to brake, with the keyboard bot's braking.
+export class PadsDriver extends BaseDriver {
+
+	constructor( page, line, options ) {
+
+		super( page, line, options );
+		this.input = 'touch-pads';
+		this.cdp = null;
+		this.steerAt = null;
+		this.throttleAt = null;
+		this.last = null;
+
+	}
+
+	async start() {
+
+		this.cdp = await this.page.context().newCDPSession( this.page );
+
+		const [ x, y ] = await centreOf( this.page, '#start-btn' );
+		await this.send( 'touchStart', [ [ x, y ] ] );
+		await this.send( 'touchEnd', [] );
+		await this.page.waitForFunction( () => document.body.dataset.state === 'playing', null, { timeout: 15000 } );
+		await this.place();
+
+	}
+
+	async place() {
+
+		this.steerAt = await centreOf( this.page, '.pad-steer' );
+		this.throttleAt = await centreOf( this.page, '.pad-throttle' );
+		this.last = [ this.steerAt.slice(), this.throttleAt.slice() ];
+		await this.send( 'touchStart', this.last );
+
+	}
+
+	async send( type, points ) {
+
+		await this.cdp.send( 'Input.dispatchTouchEvent', {
+			type,
+			touchPoints: points.map( ( [ x, y ], i ) => ( { x: Math.round( x ), y: Math.round( y ), id: i + 1, radiusX: 8, radiusY: 8, force: 1 } ) ),
+		} );
+
+	}
+
+	async update( history ) {
+
+		const now = history[ history.length - 1 ];
+		const s = this.skill;
+		const p = perceive( history, s );
+		const { proj, angle } = this.target( p );
+
+		// + angle = target to the left = slide left (negative x)
+		const e = angle - s.damping * p.yawRate + ( this.random() - 0.5 ) * 2 * s.thumbNoise;
+		let steer = Math.max( - 1, Math.min( 1, - e * 2.5 ) );
+		let throttle = 1;
+
+		if ( wantsToSlow( this, proj, p ) ) throttle = p.speed > s.cornerSpeed + 1 ? - 1 : 0;
+
+		if ( this.trackStuck( now, now.speed, throttle === 1 ) ) this.recoverUntil = now.t + 900;
+
+		if ( now.t < this.recoverUntil ) {
+
+			throttle = - 1;
+			steer = angle > 0 ? 1 : - 1;
+
+		}
+
+		const points = [
+			[ this.steerAt[ 0 ] + steer * 48, this.steerAt[ 1 ] ],
+			[ this.throttleAt[ 0 ], this.throttleAt[ 1 ] - throttle * 48 ],
+		];
+
+		if ( points.some( ( q, i ) => Math.hypot( q[ 0 ] - this.last[ i ][ 0 ], q[ 1 ] - this.last[ i ][ 1 ] ) > 1.5 ) ) {
+
+			this.last = points;
+			await this.send( 'touchMove', points );
+
+		}
+
+		return proj;
+
+	}
+
+	async replace() {
+
+		await this.send( 'touchEnd', [] );
+		await this.page.waitForTimeout( 100 );
+		await this.place();
+
+	}
+
+	async release() {
+
+		await this.send( 'touchEnd', [] );
 
 	}
 
@@ -354,7 +482,9 @@ export async function drive( page, driver, { laps = 3, timeout = 120, until = nu
 
 		}
 
-		if ( state.screen === 'playing' ) {
+		// Through a race countdown the bot just holds what start() pressed:
+		// the car can't move yet, which would read as stuck
+		if ( state.screen === 'playing' && state.phase !== 'countdown' ) {
 
 			const proj = await driver.update( history );
 			lateral.push( Math.abs( proj.lateral ) );

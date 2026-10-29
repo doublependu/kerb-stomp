@@ -43,28 +43,61 @@ function offlineSize() {
 }
 
 // Start the startup assets downloading with the HTML instead of after the JS
-// has parsed and run (they only begin ~250ms in otherwise). Crossorigin
-// matches how GLTFLoader (fetch, cors) and TextureLoader (anonymous img)
-// request them, so the preloaded responses get reused.
+// has parsed and run (they only begin ~250ms in otherwise): the track pieces,
+// decorations and the Starter Kit colormap. The player's car depends on what
+// they picked last time, so a tiny inline script adds that preload from
+// localStorage (and the Car Kit colormap if it needs it). Opponents' cars
+// load later. Crossorigin matches how GLTFLoader (fetch, cors) and
+// TextureLoader (anonymous img) request them, so the preloaded responses get
+// reused.
+const CRITICAL = /^models\/(track|decoration)-[^/]*\.glb$|^models\/src\/Textures\/colormap\.png$/;
+const CAR_MODEL = /^models\/(?:cars\/)?([^/]+)\.glb$/;
+
 function preloadAssets() {
 
 	return {
 		name: 'kerb-preload-assets',
 		transformIndexHtml: {
 			order: 'post',
-			handler( html, ctx ) {
+			async handler( html, ctx ) {
 
 				if ( ! ctx.bundle || ! ctx.filename.endsWith( 'index.html' ) ) return;
 
+				const { CARS, DEFAULT_CAR } = await import( './js/CarList.js' );
+				const carIds = new Set( CARS.map( ( c ) => c.id ) );
+				const kits = Object.fromEntries( CARS.map( ( c ) => [ c.id, c.kit ] ) );
 				const tags = [];
+				const cars = {};
+				let carsColormap = null;
 
-				for ( const file of Object.keys( ctx.bundle ) ) {
+				for ( const [ file, output ] of Object.entries( ctx.bundle ) ) {
 
-					const as = file.endsWith( '.glb' ) ? 'fetch' : /colormap-.*\.png$/.test( file ) ? 'image' : null;
-					if ( ! as ) continue;
-					tags.push( { tag: 'link', attrs: { rel: 'preload', href: './' + file, as, crossorigin: '' }, injectTo: 'head' } );
+					const sources = ( output.originalFileNames || [] ).map( ( f ) => f.replace( /^\.?\//, '' ) );
+
+					for ( const source of sources ) {
+
+						const car = source.match( CAR_MODEL );
+
+						if ( CRITICAL.test( source ) ) {
+
+							tags.push( { tag: 'link', attrs: { rel: 'preload', href: './' + file, as: source.endsWith( '.png' ) ? 'image' : 'fetch', crossorigin: '' }, injectTo: 'head' } );
+
+						} else if ( car && carIds.has( car[ 1 ] ) ) {
+
+							cars[ car[ 1 ] ] = [ './' + file, kits[ car[ 1 ] ] ];
+
+						} else if ( source === 'models/src/cars/Textures/colormap.png' ) {
+
+							carsColormap = './' + file;
+
+						}
+
+					}
 
 				}
+
+				const script = `try{var m=${ JSON.stringify( cars ) },c=localStorage.getItem('kerb.car'),e=m[c]||m[${ JSON.stringify( DEFAULT_CAR ) }],p=function(h,a){var l=document.createElement('link');l.rel='preload';l.as=a;l.crossOrigin='';l.href=h;document.head.appendChild(l)};p(e[0],'fetch');if(e[1]==='cars')p(${ JSON.stringify( carsColormap ) },'image')}catch(x){}`;
+				tags.push( { tag: 'script', children: script, injectTo: 'head' } );
 
 				return tags;
 

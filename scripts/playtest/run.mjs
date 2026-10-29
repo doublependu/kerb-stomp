@@ -4,6 +4,7 @@
 //   npm run build && npm run playtest
 //   npm run playtest -- --scenario desktop-keyboard,pause-resume --laps 2
 //   npm run playtest -- --no-record --url https://kerb-stomp.example.workers.dev/
+//   npm run playtest -- --scenario race --race-tracks classic,monza --race-skills average --npcs 4
 //
 // Recordings and reports go to playtests/ (gitignored).
 
@@ -52,13 +53,16 @@ const env = {
 	browser,
 	url: arg( 'url', null ) || server.url,
 	laps: Number( arg( 'laps', 3 ) ),
+	raceTracks: arg( 'race-tracks', 'classic' ).split( ',' ),
+	raceSkills: arg( 'race-skills', 'novice,average,expert' ).split( ',' ),
+	npcs: Number( arg( 'npcs', 4 ) ),
 	seed: Number( arg( 'seed', 1 ) ),
 	record: ! args.includes( '--no-record' ),
 	videoDir: join( recordDir, '.raw' ),
 	saveVideo( page, label ) {
 
 		const video = page.video();
-		if ( video ) videos.push( video.saveAs( join( recordDir, label + '.webm' ) ).then( () => video.delete() ) );
+		if ( video ) videos.push( video.saveAs( join( recordDir, label + '.webm' ) ).then( () => video.delete() ).catch( ( e ) => console.warn( `${ label }: video not saved (${ e.message.split( '\n' )[ 0 ] })` ) ) );
 
 	},
 	async screenshot( page, name, before ) {
