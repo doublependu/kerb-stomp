@@ -71,6 +71,13 @@ const env = {
 		await page.screenshot( { path: join( recordDir, name + '.png' ) } );
 
 	},
+	// A data URL from the page (window.__kerb.view) as a file
+	saveImage( name, url ) {
+
+		const [ head, data ] = url.split( ',' );
+		writeFileSync( join( recordDir, name + ( head.includes( 'jpeg' ) ? '.jpg' : '.png' ) ), Buffer.from( data, 'base64' ) );
+
+	},
 };
 
 console.log( `Playtest ${ stamp } against ${ env.url }${ env.record ? ' (recording)' : '' }\n` );

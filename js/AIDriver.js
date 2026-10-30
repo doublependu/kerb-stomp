@@ -13,23 +13,46 @@ import { racingLine, DRIVE } from './RacingLine.js';
 // NPC goes flat out on the straights. Pace (≤ 1) scales all their speeds,
 // for targets slower than a novice (and the lap of honour); the difficulty
 // controller in Race.js sets skill and pace so each NPC laps near its
-// target time.
+// target time. Aces (a first race's two fastest) also race harder: they
+// see traffic sooner, pass on the inside and never lift.
 
-// lookBase / lookGain: pure-pursuit lookahead (m) = base + gain · speed.
-// gain / damping: steering from heading error, braked by yaw rate. lag:
-// steering and reaction time (s). grip: share of the line's corner speed
-// (squared, as grip goes). line: how much of the racing line they take.
-// brakeError: how far (m) off the braking point they are, either way.
-// mistake: chance per braking zone of braking late. noise: steering wobble.
-const NOVICE = { lookBase: 1.6, lookGain: 0.2, gain: 2.0, damping: 0.05, lag: 0.2, grip: 0.4, line: 0.25, brakeError: 3, mistake: 0.12, noise: 0.1 };
-const EXPERT = { lookBase: 2.2, lookGain: 0.25, gain: 3.5, damping: 0.1, lag: 0.05, grip: 1, line: 1, brakeError: 0.5, mistake: 0.02, noise: 0.02 };
+// Steering follows the line: the turn rate its curvature needs at this
+// speed (read `lead` s ahead, as the car eases into a turn rate over about
+// a quarter of a second), plus feedback that turns the car's direction of
+// travel (the sphere's, not the nose's) toward the line and back onto it.
+// gain: 1/s on the travel direction's error; track: how hard (m/s) a
+// lateral miss bends the wanted direction (atan( track · miss / speed ));
+// preview: s ahead the line's heading is read. yaw: 1/s on the nose's
+// error. Fitted with `npm run sim -- --steer`.
+export const STEER = { gain: 2, track: 1, lead: 0.45, preview: 0.15, yaw: 7 };
+
+// The slip (rad) the nose leads the travel by at a steady turn rate ω:
+// max · ω / ( half + ω ), measured at full throttle
+const SLIP = { max: 2, half: 2.1 };
+
+// Skill blends the rest. lag: steering and reaction time (s). grip: share
+// of the line's corner speed (squared, as grip goes). line: how much of the
+// racing line they take. brakeError: how far (m) off the braking point
+// they are, either way. mistake: chance per braking zone of braking late.
+// noise: steering wobble.
+const NOVICE = { lag: 0.2, grip: 0.2, line: 0.25, brakeError: 3, mistake: 0.12, noise: 0.1 };
+const EXPERT = { lag: 0.03, grip: 1, line: 1, brakeError: 0.5, mistake: 0.02, noise: 0 };
 
 const HALF_ROAD = 2.4; // how far off the centerline they'll go to pass (m)
+// Aces: how far ahead (m) they look for cars to pass, how much room (m,
+// centre to centre) they leave, how far out (m) they'll go, how quickly
+// (1/s) they move out, how close (m, along and across) they'll turn toward
+// a car alongside, and how long (s) after the start they keep their lane
+const ACE = { sight: 25, room: 1.4, reach: 2.6, move: 6, alongside: 1.8, beside: 1.1, lane: 2 };
 
 function blend( skill ) {
 
 	const params = {};
 	for ( const key in NOVICE ) params[ key ] = NOVICE[ key ] + ( EXPERT[ key ] - NOVICE[ key ] ) * skill;
+
+	// Time through a corner goes as 1 / grip: blend that, so lap times
+	// spread evenly over the skills
+	params.grip = 1 / ( 1 / NOVICE.grip + ( 1 / EXPERT.grip - 1 / NOVICE.grip ) * skill );
 	return params;
 
 }
@@ -50,7 +73,8 @@ export function rng( seed ) {
 
 }
 
-const _target = [ 0, 0 ];
+const _pose = { heading: 0, curvature: 0 };
+const _ahead = { heading: 0, curvature: 0 };
 
 export class AIDriver {
 
@@ -64,11 +88,15 @@ export class AIDriver {
 
 		this.pace = 1;
 		this.boost = 0; // rubber band, ± a few %
+		this.ace = false; // set by Race.aimField: sharper racecraft, never lifts
+
+		this.overtaking = null; // the car an ace is passing, and on which side
+		this.side = 1;
+		this.lane = null; // where on the road it started
 
 		this.steer = 0;
 		this.lateral = 0;
 		this.noise = 0;
-		this.prevHeading = null;
 		this.braking = false;
 		this.late = 0;
 
@@ -94,7 +122,8 @@ export class AIDriver {
 
 		this.steer = 0;
 		this.lateral = 0;
-		this.prevHeading = null;
+		this.overtaking = null;
+		this.lane = null;
 		this.braking = false;
 		this.late = 0;
 		this.stuckTime = 0;
@@ -111,58 +140,123 @@ export class AIDriver {
 		const line = this.line;
 		const racing = this.racing || ( this.racing = racingLine( line ) );
 		const v = car.vehicle;
-		const x = v.spherePos.x, z = v.spherePos.z;
+		const vx = v.sphereVel.x, vz = v.sphereVel.z;
 		const heading = Math.atan2( car.forward.x, car.forward.z );
-		const speed = Math.hypot( v.sphereVel.x, v.sphereVel.z );
-		const yawRate = this.prevHeading === null ? 0 : wrapAngle( heading - this.prevHeading ) / dt;
-		this.prevHeading = heading;
+		const speed = Math.hypot( vx, vz );
+		const travel = speed > 1.5 ? Math.atan2( vx, vz ) : heading;
 
 		const s = car.proj.s;
 
 		// Where on the road to be: on the racing line (as much of it as they
-		// take, read where they're looking), or beside a slower car ahead
-		const look = p.lookBase + p.lookGain * speed;
-		const onLine = racing.offsetAt( s + look ) * p.line;
-		let passing = 0;
-		let blocked = false;
+		// take), or beside the nearest slower car ahead. Aces see further,
+		// pass on the inside of the next turn with more room and stick to
+		// that side till they're past.
+		const onLine = racing.offsetAt( s ) * p.line;
+		const ace = this.ace;
+		const aggression = ace ? 1 : this.aggression;
+		let other = null, ds = ace ? ACE.sight : 12, closing = 0;
 
-		for ( const other of cars ) {
+		for ( const c of cars ) {
 
-			if ( other === car || other.ghost > 0 ) continue;
+			if ( c === car || c.ghost > 0 ) continue;
 
-			let ds = other.proj.s - s;
-			if ( line.closed ) ds -= Math.round( ds / line.length ) * line.length;
-			if ( ds <= 0 || ds > 12 ) continue;
+			let d = c.proj.s - s;
+			if ( line.closed ) d -= Math.round( d / line.length ) * line.length;
+			if ( d <= 0 || d >= ds ) continue;
 
-			const dl = other.proj.lateral - car.proj.lateral;
+			// In the way: near them, or for an ace, near its line where that car is
+			const dl = c.proj.lateral - ( ace ? racing.offsetAt( c.proj.s ) * p.line : car.proj.lateral );
 			if ( Math.abs( dl ) > 1.6 ) continue;
 
 			// Only cars they're catching matter, and sooner the faster they close
-			const closing = speed - Math.hypot( other.vehicle.sphereVel.x, other.vehicle.sphereVel.z );
-			if ( ds > 3 + Math.max( 0, closing ) * 0.9 ) continue;
+			const close = speed - Math.hypot( c.vehicle.sphereVel.x, c.vehicle.sphereVel.z );
+			if ( d > ( ace ? 4 + Math.max( 0, close ) * 1.6 : 3 + Math.max( 0, close ) * 0.9 ) ) continue;
 
-			// Pass on the side with more room; aggressive drivers squeeze closer
-			const side = other.proj.lateral > 0 ? - 1 : 1;
-			const room = 1.8 * ( 1 - this.aggression * 0.45 );
-			passing = Math.max( - HALF_ROAD, Math.min( HALF_ROAD, other.proj.lateral + side * room ) ) - onLine;
-			if ( ds < 2.5 && Math.abs( dl ) < 1 && closing > 1 ) blocked = true;
-			break;
+			other = c;
+			ds = d;
+			closing = close;
 
 		}
 
+		let passing = 0;
+		let blocked = false, behind = false;
+
+		if ( other ) {
+
+			// The side with more room (aces: the inside of the turn after it, if
+			// there's room there); aggressive drivers squeeze closer
+			const room = ace ? ACE.room : 1.8 * ( 1 - aggression * 0.45 );
+			const reach = ace ? ACE.reach : HALF_ROAD;
+			let side = other.proj.lateral > 0 ? - 1 : 1;
+
+			if ( ace && this.overtaking === other ) {
+
+				side = this.side;
+
+			} else if ( ace ) {
+
+				const turn = line.turnAhead( other.proj.s, 15 );
+				if ( Math.abs( turn ) > 0.2 && Math.abs( other.proj.lateral - Math.sign( turn ) * room ) <= reach ) side = - Math.sign( turn );
+				this.side = side;
+
+			}
+
+			passing = Math.max( - reach, Math.min( reach, other.proj.lateral + side * room ) ) - onLine;
+			const dl = Math.abs( other.proj.lateral - car.proj.lateral );
+			if ( ds < 2.5 && dl < 1 && closing > 1 ) blocked = true;
+
+			// An ace right behind it and closing fast eases off rather than
+			// running into it (that'd spin them both); alongside it leans on it
+			if ( ace && ds < 2 + closing * 0.35 && dl < 0.9 && closing > 2 ) behind = true;
+
+		}
+
+		this.overtaking = other;
+
 		// Moving out to pass is eased; the line itself isn't (it'd lag)
-		this.lateral += ( passing - this.lateral ) * ( 1 - Math.exp( - dt * 3 ) );
-		const lateral = onLine + this.lateral;
+		this.lateral += ( passing - this.lateral ) * ( 1 - Math.exp( - dt * ( ace ? ACE.move : 3 ) ) );
+		let aim = onLine + this.lateral;
 
-		// Pure pursuit on that line
-		line.pointAt( s + look, _target );
-		const dir = line.directionAt( s + look );
-		const tx = _target[ 0 ] - Math.cos( dir ) * lateral;
-		const tz = _target[ 1 ] + Math.sin( dir ) * lateral;
-		const error = wrapAngle( Math.atan2( tx - x, tz - z ) - heading );
+		// Off the grid, aces keep to their lane at first (where everyone's
+		// still side by side); then they don't turn into a car alongside
+		if ( this.lane === null ) this.lane = car.proj.lateral;
+		if ( ace && time < ACE.lane ) aim = this.lane;
 
+		if ( ace ) for ( const c of cars ) {
+
+			if ( c === car || c.ghost > 0 ) continue;
+
+			let d = c.proj.s - s;
+			if ( line.closed ) d -= Math.round( d / line.length ) * line.length;
+			if ( Math.abs( d ) > ACE.alongside ) continue;
+
+			const dl = c.proj.lateral - car.proj.lateral;
+			if ( dl > 0 ) aim = Math.min( aim, c.proj.lateral - ACE.beside );
+			else aim = Math.max( aim, c.proj.lateral + ACE.beside );
+
+		}
+
+		const miss = car.proj.lateral - aim; // + is left of where they want to be
+
+		// How fast the direction of travel should turn: as the line does
+		// (read ahead), plus enough to bring it back onto the line (a
+		// heading increase moves the car right)
+		racing.pose( s + speed * STEER.preview, p.line, _pose );
+		racing.pose( s + speed * STEER.lead, p.line, _ahead );
+		const wanted = _pose.heading + Math.atan( STEER.track * miss / Math.max( speed, 4 ) );
+		const error = wrapAngle( wanted - travel );
+		const turn = speed * _ahead.curvature + STEER.gain * error;
+
+		// The sphere slides through a turn, so the nose has to lead the
+		// travel by the slip that turn rate takes (Vehicle at full throttle:
+		// 0.3 rad at 0.4 rad/s, 1.3 at 4); steer the nose to that
+		const slip = Math.sign( turn ) * SLIP.max * Math.abs( turn ) / ( SLIP.half + Math.abs( turn ) );
+		const rate = turn + STEER.yaw * wrapAngle( travel + slip - heading );
+
+		// As a share of what the car can turn at (Vehicle: 4 rad/s at speed)
+		const reach = 4 * Math.max( 0.2, Math.min( 1, Math.abs( v.linearSpeed ) ) ) * ( v.grounded ? 1 : 0.3 );
 		this.noise += ( ( this.random() - 0.5 ) * 2 * p.noise - this.noise ) * ( 1 - Math.exp( - dt * 4 ) );
-		const command = Math.max( - 1, Math.min( 1, p.gain * error - p.damping * yawRate + this.noise ) );
+		const command = Math.max( - 1, Math.min( 1, rate / reach + this.noise ) );
 		this.steer += ( command - this.steer ) * ( 1 - Math.exp( - dt / p.lag ) );
 
 		// Speed: the line's, for this car's brakes and this driver's nerve,
@@ -178,7 +272,8 @@ export class AIDriver {
 		this.braking = slowing;
 
 		let throttle = speed > want + 0.8 ? - 1 : speed > want ? 0 : 1;
-		if ( blocked && this.aggression < 0.6 ) throttle = Math.min( throttle, 0.4 );
+		if ( blocked && aggression < 0.6 ) throttle = Math.min( throttle, 0.4 );
+		if ( behind ) throttle = Math.min( throttle, 0 );
 
 		let steer = this.steer;
 
@@ -188,7 +283,7 @@ export class AIDriver {
 
 			this.recoverTime -= dt;
 			throttle = - 1;
-			steer = error > 0 ? - 1 : 1;
+			steer = wrapAngle( wanted - heading ) > 0 ? - 1 : 1;
 
 		} else if ( speed < 0.5 && throttle > 0.3 && v.grounded ) {
 

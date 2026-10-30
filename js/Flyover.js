@@ -1,21 +1,45 @@
 import * as THREE from 'three';
 import { ROAD_Y } from './TrackShape.js';
+import { CELL } from './TrackPath.js';
 
-// The short fly-over before a race: a high look at the whole track, a
-// sweep along one lap (over the bridge, past the cliff top), and a descent
-// onto the chase camera behind the player's car, then the countdown. It only
-// moves the camera; the cars wait on the grid.
+// The slow aerial view before a race: the whole track from nearly overhead
+// (under the track's name card), then an orbit of about 150° round it while
+// the camera lowers, ending on the chase camera's side (+x +z), and down
+// onto the player's car; then the countdown. The camera aims at the track's
+// centre from as far as the screen's shape needs to keep the whole track in
+// view (portrait phones included). It only moves the camera; the cars wait
+// on the grid. Eased throughout: no cuts, no stops.
 
-const OVERVIEW = 0.9; // s
-const SWEEP = 3.6;
-const LAND = 0.9;
-const HEIGHT = 13; // over the road
-const BACK = 9; // behind the look point
+const OVERHEAD = 1.2; // s
+const ORBIT = 5.3;
+const LAND = 1.5;
+const BLEND = 0.4; // the landing starts this long before the orbit ends
 
-const _pos = new THREE.Vector3();
-const _look = new THREE.Vector3();
-const _a = new THREE.Vector3();
-const _b = new THREE.Vector3();
+const TURN = THREE.MathUtils.degToRad( 150 );
+const END_AZIMUTH = Math.PI / 4; // the chase camera's side
+const ELEVATION = [ THREE.MathUtils.degToRad( 70 ), THREE.MathUtils.degToRad( 40 ) ];
+const MARGIN = 0.92; // of the view the track's box may fill
+const HAZE = 250; // m from clear to fog
+
+// Grass under everything, as far as the eye sees from up there (the
+// ground's tiles end a few cells out); uv: a grass swatch in the material's
+// colormap. Only shown while flying over.
+export function horizonMesh( material, uv, centreX, centreZ ) {
+
+	const geometry = new THREE.PlaneGeometry( 4000, 4000 ).rotateX( - Math.PI / 2 ).translate( centreX, ROAD_Y - 0.05, centreZ );
+	const uvs = geometry.getAttribute( 'uv' );
+	for ( let i = 0; i < uvs.count; i ++ ) uvs.setXY( i, uv[ 0 ], uv[ 1 ] );
+	const mesh = new THREE.Mesh( geometry, material );
+	mesh.visible = false;
+	return mesh;
+
+}
+
+const _dir = new THREE.Vector3();
+const _right = new THREE.Vector3();
+const _up = new THREE.Vector3();
+const _corner = new THREE.Vector3();
+const _y = new THREE.Vector3( 0, 1, 0 );
 
 function smooth( t ) {
 
@@ -27,63 +51,80 @@ function smooth( t ) {
 export class Flyover {
 
 	// line: the centerline (with heights); bounds: Track.computeTrackBounds
-	constructor( line, bounds ) {
+	// (a cell of margin round the track); camera: the perspective camera it
+	// moves (its fov and aspect frame the track)
+	constructor( line, bounds, camera ) {
 
-		const points = [];
-		for ( let s = 0; s < line.length; s += 6 ) {
+		this.camera = camera;
+		const top = ROAD_Y + ( line.profile ? line.profile.max : 0 ) + 2;
+		this.centre = new THREE.Vector3( bounds.centerX, ( ROAD_Y + top ) / 2, bounds.centerZ );
 
-			const p = line.pointAt( s );
-			points.push( new THREE.Vector3( p[ 0 ], ROAD_Y + line.heightAt( s ), p[ 1 ] ) );
+		// The track's box, relative to its centre
+		this.corners = [];
+		for ( const sx of [ - 1, 1 ] ) for ( const sz of [ - 1, 1 ] ) for ( const y of [ ROAD_Y, top ] ) this.corners.push( new THREE.Vector3( sx * bounds.halfWidth, y - this.centre.y, sz * bounds.halfDepth ) );
 
-		}
+		// Ground points round the centre for the sun's shadow box while the
+		// whole track shows (SunShadow.fit), and how far out the scenery goes
+		this.footprint = this.corners.filter( ( c ) => c.y < 0 );
+		this.reach = Math.hypot( bounds.halfWidth, bounds.halfDepth ) + CELL;
 
-		this.curve = new THREE.CatmullRomCurve3( points, line.closed, 'centripetal' );
-		this.centre = new THREE.Vector3( bounds.centerX, 0, bounds.centerZ );
-		this.size = Math.max( bounds.halfWidth, bounds.halfDepth );
-		this.duration = OVERVIEW + SWEEP + LAND;
+		this.duration = OVERHEAD + ORBIT + LAND;
 		this.t = 0;
 		this.done = false;
-		this.direction = new THREE.Vector3();
-		this.lookAt = new THREE.Vector3();
 
 	}
 
-	// The pose at time t; `chase` (position, look point) is where it lands
-	pose( t, chasePosition, chaseLook, outPos, outLook ) {
+	// How far from the centre, looking along -dir, the camera has to be for
+	// every corner of the track's box to be on screen
+	distance( dir ) {
 
-		// Overview, from the same side the chase camera looks from
-		const over = _a.set( 0.55, 1, 0.55 ).normalize().multiplyScalar( this.size * 2.1 ).add( this.centre );
-		const overLook = _b.copy( this.centre );
+		const camera = this.camera;
+		const tanV = Math.tan( THREE.MathUtils.degToRad( camera.fov / 2 ) ) * MARGIN;
+		const tanH = tanV * camera.aspect;
+		_right.crossVectors( _y, dir ).normalize();
+		_up.crossVectors( dir, _right );
 
-		if ( t < OVERVIEW ) {
+		let d = 0;
 
-			outPos.copy( over );
-			outLook.copy( overLook );
-			return;
+		for ( const c of this.corners ) {
+
+			const depth = c.dot( dir );
+			d = Math.max( d, depth + Math.abs( c.dot( _right ) ) / tanH, depth + Math.abs( c.dot( _up ) ) / tanV );
 
 		}
 
-		const u = ( t - OVERVIEW ) / SWEEP;
-		const k = Math.min( 1, u );
-		const at = this.curve.getPointAt( ( k * 0.999 + 1 ) % 1 );
-		const ahead = this.curve.getPointAt( ( k * 0.999 + 0.035 ) % 1 );
-		this.direction.subVectors( ahead, at ).setY( 0 ).normalize();
+		return d;
 
-		_pos.copy( at ).addScaledVector( this.direction, - BACK ).setY( at.y + HEIGHT );
-		_look.copy( ahead );
+	}
 
-		// Ease in from the overview, then down onto the chase camera
-		const into = smooth( u / 0.25 );
-		outPos.lerpVectors( over, _pos, into );
-		outLook.lerpVectors( overLook, _look, into );
+	// The pose at time t; chase (position, look point) is where it lands
+	pose( t, chasePosition, chaseLook, outPos, outLook ) {
 
-		if ( u > 1 ) {
+		const k = smooth( ( t - OVERHEAD ) / ORBIT );
+		const azimuth = END_AZIMUTH - TURN * ( 1 - k );
+		const elevation = ELEVATION[ 0 ] + ( ELEVATION[ 1 ] - ELEVATION[ 0 ] ) * k;
 
-			const land = smooth( ( t - OVERVIEW - SWEEP ) / LAND );
+		_dir.set( Math.sin( azimuth ) * Math.cos( elevation ), Math.sin( elevation ), Math.cos( azimuth ) * Math.cos( elevation ) );
+		outPos.copy( this.centre ).addScaledVector( _dir, this.distance( _dir ) );
+		outLook.copy( this.centre );
+
+		const land = smooth( ( t - OVERHEAD - ORBIT + BLEND ) / ( LAND + BLEND ) );
+
+		if ( land > 0 ) {
+
 			outPos.lerp( chasePosition, land );
 			outLook.lerp( chaseLook, land );
 
 		}
+
+	}
+
+	// Haze from just past the scenery, wherever the camera is: the ground
+	// beyond fades into the sky
+	fog( fog, position ) {
+
+		fog.near = position.distanceTo( this.centre ) + this.reach;
+		fog.far = fog.near + HAZE;
 
 	}
 

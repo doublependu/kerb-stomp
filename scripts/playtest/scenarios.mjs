@@ -5,6 +5,9 @@ import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { Polyline, encodeLoop, encodeCells } from './track.mjs';
 import { KeyboardDriver, TouchDriver, PadsDriver, drive } from './driver.mjs';
+import { TRACKS as BUILT_IN } from '../../js/Tracks.js';
+import { computeTrackBounds } from '../../js/Track.js';
+import { CELL } from '../../js/TrackPath.js';
 
 const DESKTOP = { viewport: { width: 1920, height: 1080 } };
 const LAPTOP = { viewport: { width: 1366, height: 768 } };
@@ -330,34 +333,95 @@ export const SCENARIOS = {
 
 	},
 
-	// The fly-over runs its course and hands over to the race, with no
-	// quality step-down from its wide views
+	// Stills for review once the scenery has loaded: each built-in track from
+	// above, and every turn from straight above (its landmark, chevron and
+	// whatever stands near the road)
+	'scenery': async ( env ) => {
+
+		const checks = [];
+
+		for ( const track of BUILT_IN ) {
+
+			const { page, errors, close } = await open( env, LAPTOP, { query: `&track=${ track.id }&noflyover`, label: 'scenery-' + track.id, video: false } );
+			await page.waitForFunction( () => window.__kerb.sceneryLoaded(), null, { timeout: 30000 } );
+			await page.waitForTimeout( 300 );
+
+			const b = computeTrackBounds( track.id === 'classic' ? null : track.cells );
+			const tall = Math.max( b.halfWidth * 768 / 1366, b.halfDepth ) / Math.tan( Math.PI / 180 * 25 );
+			env.saveImage( `scenery-${ track.id }`, await page.evaluate( ( [ p, l ] ) => window.__kerb.view( p, l ), [ [ b.centerX, tall, b.centerZ + 0.01 ], [ b.centerX, 0, b.centerZ ] ] ) );
+
+			const cells = track.cells;
+			const turns = cells.filter( ( c, i ) => c[ 2 ] === 'track-corner' && ( ! track.layout || cells[ ( i - 1 + cells.length ) % cells.length ][ 2 ] !== 'track-corner' ) );
+
+			for ( const [ k, c ] of turns.entries() ) {
+
+				const x = ( c[ 0 ] + 0.5 ) * CELL, z = ( c[ 1 ] + 0.5 ) * CELL;
+				env.saveImage( `scenery-${ track.id }-turn-${ k + 1 }`, await page.evaluate( ( [ p, l ] ) => window.__kerb.view( p, l ), [ [ x, 30, z + 0.01 ], [ x, 0, z ] ] ) );
+
+			}
+
+			check( checks, `scenery ${ track.id }: ${ turns.length } turns shot, no page errors`, errors.length === 0, errors.slice( 0, 2 ).join( ' | ' ) );
+			await close();
+
+		}
+
+		return { checks, runs: [] };
+
+	},
+
+	// The fly-over runs its course (about 8 s) and hands over to the race,
+	// with the whole track on screen while it orbits, on a laptop and a
+	// portrait phone, and no quality step-down from its wide views
 	'flyover': async ( env ) => {
 
 		const checks = [];
-		const { page, errors, close } = await open( env, LAPTOP, { query: '&track=suzuka', label: 'flyover', prefs: { npcs: 3 } } );
-		await page.waitForFunction( () => document.getElementById( 'start-btn' ).textContent !== 'Getting ready…', null, { timeout: 30000 } );
-		const before = await page.evaluate( () => window.__kerb.state().tier );
 
-		await page.click( '#start-btn' );
-		await page.waitForTimeout( 600 );
-		let s = await page.evaluate( () => window.__kerb.state() );
-		check( checks, 'flyover: starts on Race', s.flyover && s.phase === 'grid', `flyover ${ s.flyover }, ${ s.phase }` );
-		await env.screenshot( page, 'flyover-overview' );
+		for ( const [ device, options ] of [ [ 'laptop', LAPTOP ], [ 'phone', PHONE_PORTRAIT ] ] ) {
 
-		await page.waitForFunction( () => window.__kerb.state().phase === 'countdown', null, { timeout: 10000 } );
-		s = await page.evaluate( () => {
+			const { page, errors, close } = await open( env, options, { query: '&track=suzuka', label: 'flyover-' + device, prefs: { npcs: 3 } } );
+			await page.waitForFunction( () => document.getElementById( 'start-btn' ).textContent !== 'Getting ready…', null, { timeout: 30000 } );
+			const before = await page.evaluate( () => window.__kerb.state().tier );
 
-			const k = window.__kerb;
-			const p = k.race.player.vehicle.container.position;
-			const ndc = k.project( p.x, p.y + 0.5, p.z );
-			return { ...k.state(), ndc, far: k.three.camera.far };
+			await page.click( '#start-btn' );
+			await page.waitForTimeout( 300 );
+			let s = await page.evaluate( () => window.__kerb.state() );
+			check( checks, `flyover ${ device }: starts on Race`, s.flyover && s.phase === 'grid', `flyover ${ s.flyover }, ${ s.phase }` );
 
-		} );
-		check( checks, 'flyover: lands on the chase camera behind the player', Math.abs( s.ndc[ 0 ] ) < 0.3 && Math.abs( s.ndc[ 1 ] ) < 0.4 && s.far < 200, `player at ${ s.ndc.map( ( v ) => v.toFixed( 2 ) ) } on screen, far ${ s.far.toFixed( 0 ) }` );
-		check( checks, 'flyover: no quality step-down', s.tier === before, `${ before } → ${ s.tier }` );
-		check( checks, 'flyover: no page errors', errors.length === 0, errors.slice( 0, 2 ).join( ' | ' ) );
-		await close();
+			// The track's box on screen overhead, mid-orbit and at the orbit's end
+			for ( const at of [ 0.6, 3.6, 6.2 ] ) {
+
+				await page.waitForFunction( ( t ) => ( window.__kerb.flyover()?.t ?? Infinity ) >= t, at, { timeout: 15000 } );
+				const view = await page.evaluate( () => {
+
+					const k = window.__kerb, f = k.flyover();
+					return f ? { t: f.t, ndc: f.corners.map( ( c ) => k.project( ...c ) ) } : null;
+
+				} );
+				if ( ! view ) break;
+				const worst = Math.max( ...view.ndc.flat().map( Math.abs ) );
+				check( checks, `flyover ${ device }: the whole track on screen at ${ view.t.toFixed( 1 ) } s`, worst <= 1, `furthest corner at ${ worst.toFixed( 2 ) } of the half-screen` );
+				await env.screenshot( page, `flyover-${ device }-${ at }` );
+
+			}
+
+			const duration = await page.evaluate( () => window.__kerb.flyover()?.duration ?? 0 );
+			check( checks, `flyover ${ device }: lasts about 8 s`, duration > 7.5 && duration < 8.5, `${ duration.toFixed( 1 ) } s` );
+
+			await page.waitForFunction( () => window.__kerb.state().phase === 'countdown', null, { timeout: 15000 } );
+			s = await page.evaluate( () => {
+
+				const k = window.__kerb;
+				const p = k.race.player.vehicle.container.position;
+				const ndc = k.project( p.x, p.y + 0.5, p.z );
+				return { ...k.state(), ndc, far: k.three.camera.far };
+
+			} );
+			check( checks, `flyover ${ device }: lands on the chase camera behind the player`, Math.abs( s.ndc[ 0 ] ) < 0.3 && Math.abs( s.ndc[ 1 ] ) < 0.4 && s.far < 200, `player at ${ s.ndc.map( ( v ) => v.toFixed( 2 ) ) } on screen, far ${ s.far.toFixed( 0 ) }` );
+			check( checks, `flyover ${ device }: no quality step-down`, s.tier === before, `${ before } → ${ s.tier }` );
+			check( checks, `flyover ${ device }: no page errors`, errors.length === 0, errors.slice( 0, 2 ).join( ' | ' ) );
+			await close();
+
+		}
 
 		return { checks, runs: [] };
 

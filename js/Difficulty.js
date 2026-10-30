@@ -13,6 +13,7 @@
 
 export const SPREAD = [ 0.95, 1.12 ];
 export const SKILL_LEAN = { novice: 0.06, expert: 0.03 };
+const EXPERT_LAP = 0.78; // an expert's lap, as a share of par
 export const RUBBER_BAND = { behind: 0.06, ahead: 0.03 };
 
 // A first lap includes the standing start: this much of it counts as the
@@ -23,15 +24,19 @@ export const FIRST_LAP = 0.92;
 // player's first lap re-aims it (on a two-lap track that's half the race)
 export const FIRST_RACE = 1.06;
 
-// Except the two fastest of that field, the aces: held at the track's best
-// NPC lap and 5% slower than it, whatever the player does (no lap
-// correction, no rubber band), so the first race takes a quick lap to win
+// Except the two fastest of that field, the aces: held at the track's ace
+// lap (Tracks.js) and 5% slower than it, whatever the player does (no rubber
+// band; lap correction only toward that), so the first race takes a quick
+// lap to win. They also race harder (AIDriver: ace).
 export const ACES = [ 1, 1.05 ];
+
+// Classic's ace lap (s); custom tracks scale it by centerline length
+export const CLASSIC_ACE = 10.2;
 
 // NPC lap at full pace by skill 0, 0.25, 0.5, 0.75, 1 on Classic, from
 // `npm run sim -- --calibrate`. Tracks carry their own (Tracks.js); custom
 // ones scale Classic's by centerline length.
-export const CLASSIC_AI_LAPS = [ 18.08, 15.77, 13.53, 12.53, 11.35 ];
+export const CLASSIC_AI_LAPS = [ 16.17, 12.87, 10.72, 8.7, 8.07 ];
 
 const clamp = ( v, lo, hi ) => Math.max( lo, Math.min( hi, v ) );
 
@@ -40,8 +45,8 @@ const PACE_MIN = 0.45;
 
 // Pace for a lap this many times skill 0's: a skill-0 driver is held up
 // in the corners, so cutting its top speed adds less than proportionally
-// (measured on Monaco with `npm run sim`)
-const PACE_CURVE = [ [ 1, 1 ], [ 1.04, 0.85 ], [ 1.1, 0.7 ], [ 1.26, 0.55 ], [ 1.5, 0.45 ] ];
+// (the median over the tracks, `npm run sim -- --pace-curve`)
+const PACE_CURVE = [ [ 1, 1 ], [ 1.045, 0.85 ], [ 1.21, 0.7 ], [ 1.39, 0.55 ], [ 1.6, 0.45 ] ];
 
 function paceFor( ratio ) {
 
@@ -79,11 +84,11 @@ export function skillFor( target, laps ) {
 }
 
 // How much easier (+) or harder (−) the field is for this reference lap:
-// up to +6% for a novice's (the calibration's skill 0.3 or slower), down to
-// −3% for an expert's (skill 0.9 or faster)
-export function lean( reference, laps ) {
+// up to +6% at the track's par (an average keyboard player) or slower, down
+// to −3% at EXPERT_LAP of par or faster
+export function lean( reference, par ) {
 
-	const t = clamp( ( skillFor( reference, laps ) - 0.3 ) / 0.6, 0, 1 );
+	const t = clamp( ( 1 - reference / par ) / ( 1 - EXPERT_LAP ), 0, 1 );
 	return SKILL_LEAN.novice + ( - SKILL_LEAN.expert - SKILL_LEAN.novice ) * t;
 
 }

@@ -5,20 +5,22 @@
 //
 //   npm run kits
 
-import { copyFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 
 const ROOT = resolve( import.meta.dirname, '..' );
 
+// models: placed on their own. parts: only built into the prefabs
+// (scripts/models.mjs), not shipped.
 export const KITS = {
 	industrial: {
 		dir: 'kenney_city-kit-industrial_2.0',
 		models: [
-			'building-a', 'building-b', 'building-c', 'building-d', 'building-e', 'building-g', 'building-k', 'building-m',
-			'building-p', 'building-r', 'building-s', 'building-t', 'chimney-large', 'chimney-medium', 'detail-tank',
-			'detail-tank-large', 'shipping-container-a', 'shipping-container-b', 'shipping-container-c',
-			'solar-panel-landscape-group', 'water-tower', 'windmill',
+			'building-a', 'building-b', 'building-c', 'building-d', 'building-g', 'building-k', 'building-m', 'building-p',
+			'building-r', 'building-s', 'building-t', 'building-f', 'building-l', 'building-n', 'chimney-large', 'detail-tank',
+			'shipping-container-a', 'shipping-container-b', 'shipping-container-c', 'solar-panel-landscape-group', 'water-tower',
 		],
+		parts: [ 'building-e', 'chimney-medium', 'chimney-small', 'detail-tank-large', 'windmill', 'windmill-low' ],
 	},
 	suburban: {
 		dir: 'kenney_city-kit-suburban_20',
@@ -28,24 +30,24 @@ export const KITS = {
 			'building-type-q', 'building-type-s', 'building-type-t', 'building-type-u', 'fence-1x4', 'fence-2x3', 'planter',
 			'tree-large', 'tree-small',
 		],
+		parts: [ 'building-type-k', 'building-type-m', 'building-type-r', 'path-stones-long', 'driveway-long', 'fence-low' ],
 	},
 	fantasy: {
 		dir: 'kenney_fantasy-town-kit_2.0',
 		models: [
-			'stall', 'stall-green', 'stall-red', 'fountain-round', 'cart', 'lantern', 'tree',
-			'tree-high', 'rock-large', 'rock-wide', 'hedge-large', 'banner-red', 'banner-green',
-			// Parts for the prefab houses (scripts/models.mjs assembles them)
+			'stall-green', 'stall-red', 'cart', 'lantern', 'tree', 'tree-high', 'rock-large', 'hedge-large',
+		],
+		// The prefab houses, the market and the fountain square
+		parts: [
 			'windmill', 'watermill', 'wall', 'wall-door', 'wall-window-shutters', 'wall-window-small', 'wall-wood', 'wall-wood-window-shutters',
-			'wall-wood-door', 'roof-gable', 'roof-point', 'chimney',
+			'wall-wood-door', 'roof-gable', 'roof-point', 'chimney', 'stall', 'fountain-round', 'banner-red', 'banner-green',
 		],
 	},
 	forest: {
 		dir: 'kenney_mini-forest_1.0',
-		models: [ 'tree', 'tree-high', 'rocks-low', 'rocks-high', 'stones', 'tent', 'flag', 'platform', 'fence' ],
-	},
-	roads: {
-		dir: 'kenney_city-kit-roads',
-		models: [ 'bridge-pillar-wide', 'light-curved', 'light-square-double', 'construction-cone', 'construction-barrier', 'sign-highway', 'electricity-pole' ],
+		models: [ 'tree', 'tree-high', 'rocks-low', 'stones', 'fence', 'plant' ],
+		// The lookouts, the bridge, the camp, the archery range, the rocks
+		parts: [ 'rocks-high', 'tent', 'flag', 'building-structure', 'building-platform', 'building-roof', 'ladder', 'bridge', 'target', 'patch-dirt', 'patch-grass' ],
 	},
 	// The 2018 Racing Kit has flat per-material colours instead of a colormap;
 	// scripts/models.mjs bakes them into a generated palette
@@ -54,9 +56,11 @@ export const KITS = {
 		format: 'GLTF format',
 		colormap: false,
 		models: [
-			'grandStand', 'grandStandCovered', 'grandStandAwning', 'pitsGarage', 'pitsGarageClosed', 'pitsOffice',
-			'bannerTowerRed', 'bannerTowerGreen', 'overhead', 'overheadLights', 'lightPostLarge', 'billboard', 'tentLong',
+			'grandStand', 'grandStandCovered', 'grandStandAwning', 'grandStandCoveredRound', 'pitsGarage', 'pitsGarageClosed', 'pitsOffice',
+			'bannerTowerRed', 'bannerTowerGreen', 'lightPostLarge', 'billboard', 'billboardLow', 'tentLong', 'flagCheckers', 'barrierWall',
+			'treeLarge', 'treeSmall',
 		],
+		parts: [ 'pitsOfficeRoof', 'radarEquipment', 'flagRed', 'flagGreen', 'overheadRoundColored' ],
 	},
 };
 
@@ -69,7 +73,9 @@ function copyKit( id, kit ) {
 	const out = resolve( ROOT, 'models/src', id );
 	mkdirSync( out, { recursive: true } );
 
-	for ( const name of kit.models ) copyFileSync( join( models, name + '.glb' ), join( out, name + '.glb' ) );
+	const names = [ ...kit.models, ...kit.parts || [] ];
+	for ( const file of readdirSync( out ) ) if ( file.endsWith( '.glb' ) && ! names.includes( file.slice( 0, - 4 ) ) ) rmSync( join( out, file ) );
+	for ( const name of names ) copyFileSync( join( models, name + '.glb' ), join( out, name + '.glb' ) );
 
 	copyFileSync( join( source, 'License.txt' ), join( out, 'License.txt' ) );
 
@@ -83,7 +89,7 @@ function copyKit( id, kit ) {
 
 	}
 
-	console.log( `${ id.padEnd( 11 ) } ${ kit.models.length } models` );
+	console.log( `${ id.padEnd( 11 ) } ${ kit.models.length } models, ${ ( kit.parts || [] ).length } parts` );
 
 }
 

@@ -2,25 +2,33 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { SCENERY } from './SceneryList.js';
 import { CELL, passEdges } from './TrackPath.js';
-import { ROAD_Y, WALL_CENTER } from './TrackShape.js';
+import { ROAD_Y, WALL_CENTER, WALL_OUTER } from './TrackShape.js';
 
-// Scenery that tells the corners apart: each stretch of the lap gets a
-// style of its own (a paddock, a suburb, an industrial estate, a village, a
-// forest), every corner a landmark nobody else on the track has, on its
-// outside where the approaching driver sees it, plus red-and-white chevron
-// boards at the corners and 3-2-1 boards before the big stops.
+// Scenery that tells the corners apart. Each track has one theme (a forest,
+// a stadium, a village, a suburb, an industrial estate) and a small
+// paddock at the start/finish; every turn gets a landmark of the theme's
+// that nobody else on the track has, on its outside where the approaching
+// driver sees it, plus red-and-white chevron boards at the corners and
+// 3-2-1 boards before the big stops. Nothing stands on the road or leans
+// over a wall (CLEARANCE).
 //
 // planScenery decides what goes where (deterministic, cheap, at track
 // build: Track.js leaves those cells free and they get a ground pad of
-// their zone's colour); buildScenery places the models once they've loaded,
+// the theme's colour); buildScenery places the models once they've loaded,
 // merged per 4×4-cell chunk and kit, so it's a handful of draws however
 // many buildings there are.
 
 const PAD = 3;
 const CHUNK = 4;
 
+// Nothing stands on the road or leans over a wall: every item's footprint
+// stays this far (m) outside the walls' outer face, from every pass of the
+// track (both roads at a crossing)
+export const CLEARANCE = 0.3;
+const SHRINK = 0.8; // the smallest a prop that doesn't fit gets before it's dropped
+
 // Metres per kit unit, and how much bigger landmarks stand
-const KIT_SCALE = { industrial: 3.6, suburban: 4.2, fantasy: 2.6, forest: 2.6, roads: 6, racing: 5.5 };
+const KIT_SCALE = { industrial: 3.6, suburban: 4.2, fantasy: 2.6, forest: 2.6, racing: 5.5 };
 const LANDMARK_SCALE = 1.15;
 
 // The chase camera looks from +x +z (Camera.offset): anything tall in the
@@ -28,57 +36,77 @@ const LANDMARK_SCALE = 1.15;
 // only get low props, and landmarks prefer the far side
 const CAMERA_SIDE = [ 1, 1 ];
 
-const SUBURB_HOUSES = [ 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'j', 'l', 'n', 'o', 'q', 's', 't', 'u' ].map( ( l ) => 'suburban/building-type-' + l );
-const FACTORIES = [ 'a', 'b', 'c', 'd', 'e', 'g', 'k', 'm', 'p', 'r', 's', 't' ].map( ( l ) => 'industrial/building-' + l );
-
-export const ZONES = {
-	paddock: {
+// One theme per track (Tracks.js theme): its buildings, its props (low
+// ones for the camera's side of the road), a landmark for each turn, the
+// colour of its ground pads, what grows on its hillsides, and the share of
+// the cells one and two rings out from the road that get something.
+// 'id@a' takes the kit's colour variation a.
+export const THEMES = {
+	forest: {
+		ground: [ 0.031, 0.875 ], // grass, like the ground tiles
+		buildings: [],
+		props: [ 'forest/tree', 'forest/tree-high', 'forest/tree', 'forest/rocks-low', 'forest/stones', 'forest/plant' ],
+		low: [ 'forest/rocks-low', 'forest/stones', 'forest/fence', 'forest/plant' ],
+		landmarks: [ 'forest/lookout', 'forest/treehouse', 'forest/rope-bridge', 'forest/camp', 'forest/archery', 'forest/rock-pile' ],
+		hill: [ 'forest/tree', 'forest/tree-high', 'forest/tree', 'forest/rocks-low', 'forest/stones' ],
+		density: [ 0.25, 0.15 ],
+	},
+	stadium: {
 		ground: [ 0.156, 0.86 ], // tarmac grey
-		buildings: [ 'racing/grandStand', 'racing/grandStandCovered', 'racing/grandStandAwning', 'racing/pitsGarage', 'racing/pitsGarageClosed', 'racing/pitsOffice' ],
-		props: [ 'racing/bannerTowerRed', 'racing/bannerTowerGreen', 'racing/lightPostLarge', 'racing/tentLong', 'racing/billboard', 'roads/light-square-double' ],
-		low: [ 'roads/construction-barrier', 'roads/construction-cone', 'roads/light-square-double', 'roads/construction-barrier' ],
-		landmarks: [ 'racing/overheadLights', 'racing/grandStandCovered', 'racing/bannerTowerGreen' ],
-		density: [ 0.8, 0.6 ],
-	},
-	suburb: {
-		ground: [ 0.281, 0.62 ], // lawn
-		buildings: SUBURB_HOUSES,
-		props: [ 'suburban/tree-large', 'suburban/tree-small', 'suburban/planter', 'suburban/fence-1x4', 'suburban/tree-large' ],
-		low: [ 'suburban/fence-1x4', 'suburban/planter', 'suburban/tree-small', 'suburban/fence-2x3' ],
-		landmarks: [ 'industrial/water-tower', 'fantasy/house-tower', 'fantasy/house-windmill' ],
-		density: [ 0.75, 0.55 ],
-	},
-	industrial: {
-		ground: [ 0.281, 0.875 ], // concrete
-		buildings: FACTORIES,
-		props: [ 'industrial/shipping-container-a', 'industrial/shipping-container-b', 'industrial/shipping-container-c', 'industrial/detail-tank', 'industrial/solar-panel-landscape-group', 'roads/electricity-pole' ],
-		low: [ 'industrial/shipping-container-a', 'industrial/shipping-container-b', 'industrial/shipping-container-c', 'industrial/detail-tank', 'industrial/solar-panel-landscape-group' ],
-		landmarks: [ 'industrial/chimney-large', 'industrial/detail-tank-large', 'industrial/water-tower', 'industrial/windmill', 'industrial/chimney-medium' ],
-		density: [ 0.7, 0.5 ],
+		buildings: [ 'racing/grandStand', 'racing/grandStandCovered', 'racing/grandStandAwning', 'racing/grandStandCovered' ],
+		props: [ 'racing/lightPostLarge', 'racing/billboard', 'racing/bannerTowerRed', 'racing/bannerTowerGreen', 'racing/tentLong', 'racing/flagCheckers' ],
+		low: [ 'racing/barrierWall', 'racing/billboardLow', 'racing/barrierWall' ],
+		landmarks: [ 'racing/grandStandCoveredRound', 'racing/control-tower', 'racing/gantry' ],
+		hill: [ 'racing/treeLarge', 'racing/treeSmall' ],
+		density: [ 0.45, 0.3 ],
 	},
 	village: {
 		ground: [ 0.031, 0.62 ], // sandy path
-		buildings: [ 'fantasy/house-cottage', 'fantasy/house-tall', 'fantasy/house-long', 'fantasy/house-long-tall', 'fantasy/house-tower' ],
+		buildings: [ 'fantasy/house-cottage', 'fantasy/house-tall', 'fantasy/house-long', 'fantasy/house-long-tall' ],
 		props: [ 'fantasy/stall-green', 'fantasy/stall-red', 'fantasy/cart', 'fantasy/lantern', 'fantasy/hedge-large', 'fantasy/tree', 'fantasy/tree-high', 'fantasy/rock-large' ],
-		low: [ 'fantasy/stall-green', 'fantasy/stall-red', 'fantasy/cart', 'fantasy/hedge-large', 'fantasy/lantern' ],
-		landmarks: [ 'fantasy/house-windmill', 'fantasy/house-watermill', 'fantasy/house-tower' ],
-		density: [ 0.75, 0.5 ],
+		low: [ 'fantasy/cart', 'fantasy/hedge-large', 'fantasy/lantern', 'fantasy/hedge-large' ],
+		landmarks: [ 'fantasy/house-windmill', 'fantasy/house-watermill', 'fantasy/house-tower', 'fantasy/market', 'fantasy/fountain-square' ],
+		hill: [ 'fantasy/tree', 'fantasy/tree-high', 'fantasy/tree', 'fantasy/rock-large' ],
+		density: [ 0.25, 0.15 ],
 	},
-	forest: {
-		ground: [ 0.031, 0.875 ], // grass, like the forest tiles (only landmark cells take it)
-		buildings: [],
-		props: [ 'forest/tree', 'forest/tree-high', 'forest/rocks-low', 'forest/rocks-high', 'forest/stones', 'forest/tent', 'forest/flag' ],
-		low: [ 'forest/rocks-low', 'forest/stones', 'forest/tent' ],
-		landmarks: [ 'industrial/windmill', 'fantasy/house-windmill', 'forest/rocks-high', 'industrial/water-tower' ],
-		density: [ 0, 0 ],
+	suburb: {
+		ground: [ 0.281, 0.62 ], // lawn
+		buildings: [ 'a', 'c', 'e', 'g', 'h', 'j', 'l', 'o', 'q', 's' ].map( ( l ) => 'suburban/building-type-' + l ),
+		props: [ 'suburban/tree-large', 'suburban/tree-small', 'suburban/planter', 'suburban/fence-1x4', 'suburban/tree-large' ],
+		low: [ 'suburban/fence-1x4', 'suburban/planter', 'suburban/tree-small', 'suburban/fence-2x3' ],
+		landmarks: [
+			'suburban/building-type-d@a', 'suburban/terrace', 'suburban/building-type-b@c', 'suburban/garden', 'suburban/building-type-n',
+			'suburban/building-type-f@a', 'suburban/park', 'suburban/building-type-t@c', 'suburban/building-type-u',
+		],
+		hill: [ 'suburban/tree-large', 'suburban/tree-small', 'suburban/tree-large' ],
+		density: [ 0.6, 0.4 ],
+	},
+	industrial: {
+		ground: [ 0.281, 0.875 ], // concrete
+		buildings: [ 'a', 'b', 'c', 'd', 'g', 'k', 'm', 'p', 'r', 's', 't' ].map( ( l ) => 'industrial/building-' + l ),
+		props: [ 'industrial/shipping-container-a', 'industrial/shipping-container-b', 'industrial/shipping-container-c', 'industrial/detail-tank', 'industrial/solar-panel-landscape-group' ],
+		low: [ 'industrial/shipping-container-a', 'industrial/shipping-container-b', 'industrial/shipping-container-c', 'industrial/detail-tank', 'industrial/solar-panel-landscape-group' ],
+		landmarks: [
+			'industrial/chimney-large', 'industrial/water-tower', 'industrial/wind-farm', 'industrial/tank-farm', 'industrial/works',
+			'industrial/building-l', 'industrial/building-f', 'industrial/building-n',
+		],
+		// The kit has no trees; the paddock's kit has
+		hill: [ 'racing/treeLarge', 'racing/treeSmall', 'racing/treeLarge' ],
+		density: [ 0.45, 0.3 ],
 	},
 };
 
-// Every landmark, for when a track has more corners than its zones have
-const ALL_LANDMARKS = [ ...new Set( Object.values( ZONES ).flatMap( ( z ) => z.landmarks ) ) ];
+// Whatever the theme, the start/finish gets a small paddock: grandstands
+// and pits (low barriers on the camera's side), at most PADDOCK.most items
+const PADDOCK = {
+	ground: [ 0.156, 0.86 ],
+	buildings: [ 'racing/grandStandCovered', 'racing/pitsGarage', 'racing/grandStand', 'racing/pitsGarageClosed', 'racing/pitsOffice' ],
+	low: [ 'racing/barrierWall', 'racing/flagCheckers' ],
+	most: 6,
+};
 
-// Hillside cells get trees and rocks whatever the zone
-const HILL_PROPS = [ 'forest/tree', 'forest/tree-high', 'forest/tree', 'forest/rocks-low', 'fantasy/tree-high', 'forest/stones' ];
+// How many props a prop cell (or a hillside one) gets
+const PROPS = [ 1, 3 ];
 
 const DIRS = { N: [ 0, - 1 ], S: [ 0, 1 ], E: [ 1, 0 ], W: [ - 1, 0 ] };
 
@@ -98,14 +126,20 @@ function pick( list, r ) {
 
 }
 
-// Where everything goes. track.scenery: [ [ first cell, zone ], … ] along
-// the lap (ordered tracks); Classic and custom tracks only get corner
-// landmarks and boards, in the forest they have.
+// 'id@a' → { id, variation: 'a' }
+function model( entry ) {
+
+	const [ id, variation ] = entry.split( '@' );
+	return { id, variation: variation || null };
+
+}
+
+// Where everything goes, in track.theme (THEMES). Classic and custom tracks
+// only get corner landmarks and boards, from the forest.
 export function planScenery( shape, track ) {
 
 	const { cells } = shape;
-	const zonesAlong = track.scenery || [ [ 0, 'forest' ] ];
-	const zoneOf = ( i ) => zonesAlong.filter( ( [ first ] ) => first <= i ).pop()?.[ 1 ] || zonesAlong[ zonesAlong.length - 1 ][ 1 ];
+	const theme = THEMES[ track.theme ] || THEMES.forest;
 
 	const trackKeys = new Map();
 	cells.forEach( ( c, i ) => trackKeys.set( c[ 0 ] + ',' + c[ 1 ], i ) );
@@ -144,7 +178,7 @@ export function planScenery( shape, track ) {
 
 	// Corner landmarks first: on the outside, straight ahead of the car
 	// coming in (then the diagonal, then the far side)
-	const landmarksTaken = new Set();
+	let landmarks = 0;
 	const ordered = shape.ordered;
 	// Turns need each cell's way in and out: the cells in driving order, on
 	// a closed loop
@@ -163,30 +197,47 @@ export function planScenery( shape, track ) {
 		const e = DIRS[ entry ], f = DIRS[ exit ];
 		const candidates = [ [ - e[ 0 ], - e[ 1 ] ], [ - e[ 0 ] - f[ 0 ], - e[ 1 ] - f[ 1 ] ], [ - f[ 0 ], - f[ 1 ] ] ]
 			.filter( ( [ dx, dz ] ) => dx * CAMERA_SIDE[ 0 ] + dz * CAMERA_SIDE[ 1 ] <= 0 );
-		const zone = ZONES[ zoneOf( i ) ];
+		// The first free cell it fits in at 80% or more; failing that, the
+		// first free one, shrunk until it fits
+		const free = candidates.map( ( [ dx, dz ] ) => [ cell[ 0 ] + dx, cell[ 1 ] + dz ] ).filter( ( [ gx, gz ] ) => ! trackKeys.has( gx + ',' + gz ) && ! used.has( gx + ',' + gz ) );
+		if ( ! free.length ) return;
 
-		for ( const [ dx, dz ] of candidates ) {
+		// The theme's landmarks in turn (more turns than landmarks: again)
+		const { id, variation } = model( theme.landmarks[ landmarks ++ % theme.landmarks.length ] );
 
-			const gx = cell[ 0 ] + dx, gz = cell[ 1 ] + dz;
-			const key = gx + ',' + gz;
-			if ( trackKeys.has( key ) || used.has( key ) ) continue;
+		let item = null, gx, gz;
 
-			const pool = [ ...zone.landmarks, ...ALL_LANDMARKS ].filter( ( id ) => ! landmarksTaken.has( id ) );
-			const id = pool.length ? pool[ 0 ] : pick( zone.landmarks.length ? zone.landmarks : ALL_LANDMARKS, hash( gx, gz ) );
-			landmarksTaken.add( id );
-			used.add( key );
+		for ( const [ fx, fz ] of free ) {
 
-			const [ x, z ] = cellCentre( gx, gz );
-			plan.items.push( { id, x, z, y: terrainHeight( x, z ), angle: snap( facing( gx, gz, cell ) ), scale: LANDMARK_SCALE } );
-			plan.cells.set( key, { zone: zoneOf( i ), ground: ! raised( gx, gz ) && zone.ground ? zone.ground : null } );
-			break;
+			const [ x, z ] = cellCentre( fx, fz );
+			item = place( shape, { id, variation, x, z, y: terrainHeight( x, z ), angle: snap( facing( fx, fz, cell ) ), scale: placedScale( id, LANDMARK_SCALE ) }, x, z );
+			[ gx, gz ] = [ fx, fz ];
+			if ( item ) break;
 
 		}
 
+		if ( ! item ) {
+
+			[ gx, gz ] = free[ 0 ];
+			const [ x, z ] = cellCentre( gx, gz );
+			item = place( shape, { id, variation, x, z, y: terrainHeight( x, z ), angle: snap( facing( gx, gz, cell ) ), scale: placedScale( id, LANDMARK_SCALE ) }, x, z, 0.4 );
+
+		}
+
+		if ( ! item ) return;
+
+		const key = gx + ',' + gz;
+		used.add( key );
+		plan.items.push( item );
+		plan.cells.set( key, { ground: ! raised( gx, gz ) ? theme.ground : null } );
+
 	} );
 
-	// Buildings and props by zone, ring 1–2 round the track; trees on the
-	// hillside
+	// The paddock, then the theme's buildings and props, ring 1–2 round the
+	// track; trees on the hillside
+	const finish = new Set( ordered ? [ cells.length - 1, 0, 1 ] : [] );
+	let paddock = 0;
+
 	for ( let gz = minZ; gz <= maxZ; gz ++ ) {
 
 		for ( let gx = minX; gx <= maxX; gx ++ ) {
@@ -200,16 +251,19 @@ export function planScenery( shape, track ) {
 			if ( raised( gx, gz ) ) {
 
 				used.add( key );
-				plan.cells.set( key, { zone: 'hill', ground: null } );
+				plan.cells.set( key, { ground: null } );
 
-				const count = 2 + Math.floor( hash( gx, gz, 5 ) * 3 );
+				const count = PROPS[ 0 ] + Math.floor( hash( gx, gz, 5 ) * ( PROPS[ 1 ] - PROPS[ 0 ] + 1 ) );
 
 				for ( let k = 0; k < count; k ++ ) {
 
 					const px = x + ( hash( gx, gz, k * 2 + 11 ) - 0.5 ) * CELL * 0.8;
 					const pz = z + ( hash( gx, gz, k * 2 + 12 ) - 0.5 ) * CELL * 0.8;
-					if ( nearRoad( shape, px, pz ) ) continue;
-					plan.items.push( { id: pick( HILL_PROPS, hash( gx, gz, k + 30 ) ), x: px, z: pz, y: terrainHeight( px, pz ), angle: hash( gx, gz, k + 40 ) * Math.PI * 2, scale: 0.8 + hash( gx, gz, k + 50 ) * 0.5 } );
+					const id = pick( theme.hill, hash( gx, gz, k + 30 ) );
+					const item = place( shape, { id, x: px, z: pz, y: 0, angle: hash( gx, gz, k + 40 ) * Math.PI * 2, scale: placedScale( id, 0.8 + hash( gx, gz, k + 50 ) * 0.5 ) }, x, z );
+					if ( ! item ) continue;
+					item.y = terrainHeight( item.x, item.z );
+					plan.items.push( item );
 
 				}
 
@@ -219,31 +273,46 @@ export function planScenery( shape, track ) {
 
 			if ( ! ordered || ring > 2 ) continue;
 
-			const zoneName = zoneOf( index );
-			const zone = ZONES[ zoneName ];
-			const r = hash( gx, gz, 1 );
-			if ( r >= zone.density[ ring - 1 ] ) continue;
-
-			used.add( key );
-			plan.cells.set( key, { zone: zoneName, ground: zone.ground } );
-
 			const angle = snap( facing( gx, gz, cell ) );
 			const cameraSide = ring === 1 && ( gx - cell[ 0 ] ) * CAMERA_SIDE[ 0 ] + ( gz - cell[ 1 ] ) * CAMERA_SIDE[ 1 ] > 0;
 
-			if ( ! cameraSide && hash( gx, gz, 2 ) < 0.72 && zone.buildings.length ) {
+			if ( ring === 1 && finish.has( index ) && paddock < PADDOCK.most ) {
 
-				plan.items.push( { id: pick( zone.buildings, hash( gx, gz, 3 ) ), x, z, y: 0, angle, scale: 1 } );
+				const id = pick( cameraSide ? PADDOCK.low : PADDOCK.buildings, hash( gx, gz, 6 ) );
+				const item = place( shape, { id, x, z, y: 0, angle, scale: placedScale( id, 1 ) }, x, z );
+				if ( ! item ) continue;
+
+				used.add( key );
+				plan.cells.set( key, { ground: PADDOCK.ground } );
+				plan.items.push( item );
+				paddock ++;
+				continue;
+
+			}
+
+			if ( hash( gx, gz, 1 ) >= theme.density[ ring - 1 ] ) continue;
+
+			used.add( key );
+			plan.cells.set( key, { ground: theme.ground } );
+
+			if ( ! cameraSide && hash( gx, gz, 2 ) < 0.72 && theme.buildings.length ) {
+
+				const id = pick( theme.buildings, hash( gx, gz, 3 ) );
+				const item = place( shape, { id, x, z, y: 0, angle, scale: placedScale( id, 1 ) }, x, z );
+				if ( item ) plan.items.push( item );
 
 			} else {
 
 				// A few props round the cell
-				const count = 2 + Math.floor( hash( gx, gz, 4 ) * 3 );
+				const count = PROPS[ 0 ] + Math.floor( hash( gx, gz, 4 ) * ( PROPS[ 1 ] - PROPS[ 0 ] + 1 ) );
 
 				for ( let k = 0; k < count; k ++ ) {
 
 					const px = x + ( hash( gx, gz, k * 2 + 21 ) - 0.5 ) * CELL * 0.7;
 					const pz = z + ( hash( gx, gz, k * 2 + 22 ) - 0.5 ) * CELL * 0.7;
-					plan.items.push( { id: pick( cameraSide ? zone.low : zone.props, hash( gx, gz, k + 60 ) ), x: px, z: pz, y: 0, angle: angle + ( hash( gx, gz, k + 70 ) < 0.5 ? 0 : Math.PI / 2 ), scale: 1 } );
+					const id = pick( cameraSide ? theme.low : theme.props, hash( gx, gz, k + 60 ) );
+					const item = place( shape, { id, x: px, z: pz, y: 0, angle: angle + ( hash( gx, gz, k + 70 ) < 0.5 ? 0 : Math.PI / 2 ), scale: placedScale( id, 1 ) }, x, z );
+					if ( item ) plan.items.push( item );
 
 				}
 
@@ -258,10 +327,112 @@ export function planScenery( shape, track ) {
 
 }
 
-function nearRoad( shape, x, z ) {
+// Metres per kit unit for a model at `size` (1 = its kit's usual scale),
+// fitted inside a cell
+function placedScale( id, size ) {
 
-	const p = shape.line.project( x, z );
-	return Math.abs( p.lateral ) < CELL / 2 + 0.8;
+	const info = SCENERY[ id ];
+	return Math.min( KIT_SCALE[ info.kit ] * size, CELL * 0.92 / Math.max( info.w, info.d ) );
+
+}
+
+// The item where it fits (CLEARANCE outside the walls): as placed, else
+// moved toward its cell's centre (cx, cz), else shrunk there down to
+// `smallest` of its size; null if it doesn't fit even then
+function place( shape, item, cx, cz, smallest = SHRINK ) {
+
+	const x0 = item.x, z0 = item.z, scale = item.scale;
+
+	for ( const t of [ 0, 0.35, 0.7, 1 ] ) {
+
+		item.x = x0 + ( cx - x0 ) * t;
+		item.z = z0 + ( cz - z0 ) * t;
+		if ( fits( shape, item ) ) return item;
+
+	}
+
+	for ( let f = 0.9; f >= smallest - 1e-9; f -= 0.1 ) {
+
+		item.scale = scale * f;
+		if ( fits( shape, item ) ) return item;
+
+	}
+
+	return null;
+
+}
+
+function fits( shape, item ) {
+
+	return roadGap( shape.line, footprint( item ), CLEARANCE + 0.01 ) >= CLEARANCE;
+
+}
+
+// An item's footprint: the corners of its rotated box, [ x, z ] × 4
+export function footprint( item ) {
+
+	const info = SCENERY[ item.id ];
+	const hw = info.w * item.scale / 2, hd = info.d * item.scale / 2;
+	const c = Math.cos( item.angle ), s = Math.sin( item.angle );
+	return [ [ - hw, - hd ], [ hw, - hd ], [ hw, hd ], [ - hw, hd ] ].map( ( [ x, z ] ) => [ item.x + x * c + z * s, item.z - x * s + z * c ] );
+
+}
+
+// How far a footprint stays outside the walls' outer face (m; negative:
+// over the wall or on the road), from every pass of the centerline; at
+// most `limit` (passes further than that aren't measured)
+export function roadGap( line, corners, limit = Infinity ) {
+
+	const cx = ( corners[ 0 ][ 0 ] + corners[ 2 ][ 0 ] ) / 2, cz = ( corners[ 0 ][ 1 ] + corners[ 2 ][ 1 ] ) / 2;
+	const radius = Math.hypot( corners[ 0 ][ 0 ] - cx, corners[ 0 ][ 1 ] - cz );
+	const points = line.points;
+	let best = limit + WALL_OUTER;
+
+	for ( let k = 0; k < line.segments; k ++ ) {
+
+		const a = points[ k ], b = points[ ( k + 1 ) % points.length ];
+		if ( pointSegment( cx, cz, a, b ) - radius >= best ) continue;
+		best = Math.min( best, polygonSegment( corners, a, b ) );
+
+	}
+
+	return best - WALL_OUTER;
+
+}
+
+function pointSegment( x, z, a, b ) {
+
+	const dx = b[ 0 ] - a[ 0 ], dz = b[ 1 ] - a[ 1 ];
+	const t = Math.max( 0, Math.min( 1, ( ( x - a[ 0 ] ) * dx + ( z - a[ 1 ] ) * dz ) / ( dx * dx + dz * dz || 1 ) ) );
+	return Math.hypot( x - a[ 0 ] - dx * t, z - a[ 1 ] - dz * t );
+
+}
+
+function cross( a, b, c ) {
+
+	return ( b[ 0 ] - a[ 0 ] ) * ( c[ 1 ] - a[ 1 ] ) - ( b[ 1 ] - a[ 1 ] ) * ( c[ 0 ] - a[ 0 ] );
+
+}
+
+// Distance between a convex polygon and a segment (0 if they touch)
+function polygonSegment( corners, a, b ) {
+
+	const n = corners.length;
+	let inside = true, best = Infinity;
+
+	for ( let i = 0; i < n; i ++ ) {
+
+		const p = corners[ i ], q = corners[ ( i + 1 ) % n ];
+		if ( cross( p, q, a ) < 0 ) inside = false;
+
+		const d1 = cross( p, q, a ), d2 = cross( p, q, b ), d3 = cross( a, b, p ), d4 = cross( a, b, q );
+		if ( d1 * d2 < 0 && d3 * d4 < 0 ) return 0;
+
+		best = Math.min( best, pointSegment( a[ 0 ], a[ 1 ], p, q ), pointSegment( b[ 0 ], b[ 1 ], p, q ), pointSegment( p[ 0 ], p[ 1 ], a, b ) );
+
+	}
+
+	return inside ? 0 : best;
 
 }
 
@@ -318,7 +489,7 @@ const WHITE_UV = [ 0.656, 0.86 ];
 const POST_UV = [ 0.594, 0.875 ];
 const DARK_UV = [ 0.156, 0.86 ];
 
-// Ground pads for the planned cells (zone colours), built with the track so
+// Ground pads for the planned cells (the theme's colour), built with the track so
 // nothing shows through before the models arrive
 export function sceneryPads( plan, material ) {
 
@@ -424,6 +595,23 @@ export function sceneryModels( plan ) {
 
 }
 
+// The colormap an item takes: its own variation, else the track's for its
+// kit (variations: { kit: 'b' }), else the kit's
+function colormapOf( item, variations ) {
+
+	const kit = SCENERY[ item.id ].kit;
+	const variation = item.variation || variations[ kit ];
+	return variation ? kit + '-' + variation : kit;
+
+}
+
+// Colormaps the plan needs (Loader.getColormap names)
+export function sceneryColormaps( plan, variations = {} ) {
+
+	return [ ...new Set( plan.items.filter( ( item ) => SCENERY[ item.id ] ).map( ( item ) => colormapOf( item, variations ) ) ) ];
+
+}
+
 const _m = new THREE.Matrix4();
 const _s = new THREE.Matrix4();
 const _uv = new THREE.Vector3();
@@ -472,7 +660,7 @@ function bakeModel( model ) {
 
 // models: id → loaded scene. variations: { kit: 'b' } colormap per kit;
 // colormap( name ): the shared texture (Loader.getColormap). Returns a
-// group of merged meshes, one per chunk and kit.
+// group of merged meshes, one per chunk and colormap.
 export function buildScenery( plan, models, { variations = {}, baseMaterial, colormap } ) {
 
 	const group = new THREE.Group();
@@ -487,33 +675,31 @@ export function buildScenery( plan, models, { variations = {}, baseMaterial, col
 
 		if ( ! baked.has( item.id ) ) baked.set( item.id, bakeModel( model ) );
 
-		const kitScale = KIT_SCALE[ info.kit ] * item.scale;
-		const fit = item.scale > 1.2 ? Infinity : CELL * 0.92 / Math.max( info.w, info.d ); // landmarks may overhang
-		const scale = Math.min( kitScale, fit );
+		const scale = item.scale;
 
 		_m.makeRotationY( item.angle ).setPosition( item.x, ROAD_Y + item.y, item.z );
 		_s.makeScale( scale, scale, scale );
 		_m.multiply( _s );
 
-		const key = Math.floor( item.x / ( CELL * CHUNK ) ) + ',' + Math.floor( item.z / ( CELL * CHUNK ) ) + ',' + info.kit;
-		if ( ! buckets.has( key ) ) buckets.set( key, { kit: info.kit, parts: [] } );
+		const map = colormapOf( item, variations );
+		const key = Math.floor( item.x / ( CELL * CHUNK ) ) + ',' + Math.floor( item.z / ( CELL * CHUNK ) ) + ',' + map;
+		if ( ! buckets.has( key ) ) buckets.set( key, { map, parts: [] } );
 		buckets.get( key ).parts.push( baked.get( item.id ).clone().applyMatrix4( _m ) );
 
 	}
 
 	const materials = {};
 
-	for ( const { kit, parts } of buckets.values() ) {
+	for ( const { map, parts } of buckets.values() ) {
 
-		if ( ! materials[ kit ] ) {
+		if ( ! materials[ map ] ) {
 
-			const variation = variations[ kit ];
-			materials[ kit ] = baseMaterial.clone();
-			materials[ kit ].map = colormap( variation ? kit + '-' + variation : kit );
+			materials[ map ] = baseMaterial.clone();
+			materials[ map ].map = colormap( map );
 
 		}
 
-		const mesh = new THREE.Mesh( mergeGeometries( parts ), materials[ kit ] );
+		const mesh = new THREE.Mesh( mergeGeometries( parts ), materials[ map ] );
 		mesh.castShadow = true;
 		mesh.receiveShadow = true;
 		group.add( mesh );

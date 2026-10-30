@@ -13,7 +13,7 @@
 // (and sets the body's height), so every mesh is first moved into an unnamed
 // child node: the named nodes keep their transforms exactly.
 
-import { readdirSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readdirSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { resolve, basename } from 'node:path';
 import { NodeIO, Logger, Document, getBounds } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
@@ -268,6 +268,66 @@ const PREFABS = {
 	'house-watermill': { cells: [ [ 0, 0 ], [ 1, 0 ] ], storeys: [ 'stone', 'wood' ], roof: 'roof-gable', extra: [ 'watermill', [ 1.62, 0.9, 0 ], 0 ] },
 };
 
+// Landmarks put together from a kit's parts and models: [ part, [ x, y, z ]
+// (the middle of its footprint, on its underside), turn, scale ]. Front +z.
+const COMPOSITES = {
+	// Forest: a lookout on a rock, a roofed tree house, two platforms and a
+	// rope bridge, a camp, an archery range, a pile of rocks
+	'forest/lookout': [
+		[ 'rocks-high', [ 0, 0, 0 ] ], [ 'rocks-low', [ 0.85, 0, 0.25 ] ], [ 'rocks-low', [ - 0.8, 0, - 0.3 ], Math.PI / 2 ],
+		[ 'building-structure', [ 0, 1, 0 ] ], [ 'building-platform', [ 0, 2, 0 ] ], [ 'flag', [ 0.45, 2.1, - 0.45 ] ],
+	],
+	'forest/treehouse': [
+		[ 'building-structure', [ 0, 0, 0 ] ], [ 'building-structure', [ 0, 1, 0 ] ], [ 'building-platform', [ 0, 2, 0 ] ], [ 'building-roof', [ 0, 2.1, 0 ] ],
+		[ 'ladder', [ 0, 0, 0.57 ] ], [ 'ladder', [ 0, 1, 0.57 ] ], [ 'tree-high', [ - 1.05, 0, - 0.3 ] ], [ 'tree', [ 1.05, 0, - 0.2 ] ],
+	],
+	'forest/rope-bridge': [
+		[ 'building-structure', [ - 1, 0, 0 ] ], [ 'building-platform', [ - 1, 1, 0 ] ], [ 'building-structure', [ 1, 0, 0 ] ], [ 'building-platform', [ 1, 1, 0 ] ],
+		[ 'bridge', [ 0, 1.05, 0 ] ], [ 'flag', [ - 1.4, 1.1, - 0.4 ] ], [ 'flag', [ 1.4, 1.1, 0.4 ] ], [ 'ladder', [ - 1, 0, 0.57 ] ],
+	],
+	'forest/camp': [
+		[ 'patch-dirt', [ 0, 0, 0 ], 0, 2 ], [ 'tent', [ - 0.7, 0, - 0.15 ], 0.4 ], [ 'tent', [ 0.75, 0, - 0.1 ], - 0.5 ], [ 'stones', [ 0, 0, 0.65 ], 0, 0.6 ],
+		[ 'flag', [ 0, 0, - 0.8 ] ], [ 'tree-high', [ - 1.35, 0, - 0.75 ] ], [ 'tree', [ 1.4, 0, - 0.7 ] ],
+	],
+	'forest/archery': [
+		[ 'patch-grass', [ - 0.85, 0, 0.2 ], 0, 0.75 ], [ 'patch-grass', [ 0, 0, 0.1 ], 0, 0.75 ], [ 'patch-grass', [ 0.85, 0, 0.2 ], 0, 0.75 ],
+		[ 'target', [ - 0.85, 0.05, 0.2 ] ], [ 'target', [ 0, 0.05, 0.1 ] ], [ 'target', [ 0.85, 0.05, 0.2 ] ],
+		[ 'fence', [ - 0.55, 0, - 0.55 ] ], [ 'fence', [ 0.55, 0, - 0.55 ] ], [ 'tree-high', [ - 1.55, 0, - 0.4 ] ], [ 'tree-high', [ 1.55, 0, - 0.35 ] ],
+	],
+	'forest/rock-pile': [
+		[ 'rocks-high', [ 0, 0, 0 ] ], [ 'rocks-high', [ 0.95, 0, 0.15 ], Math.PI / 2 ], [ 'rocks-high', [ 0.45, 1, 0.05 ], Math.PI ],
+		[ 'rocks-low', [ - 0.95, 0, 0.25 ] ], [ 'stones', [ 1.2, 0, 0.85 ] ], [ 'plant', [ - 0.5, 0, 0.75 ] ],
+	],
+	// Village: a market and a fountain square
+	'fantasy/market': [
+		[ 'stall-green', [ - 1.05, 0, 0 ] ], [ 'stall-red', [ 0, 0, 0 ] ], [ 'stall-green', [ 1.05, 0, 0 ] ], [ 'cart', [ 0.3, 0, 1.15 ], Math.PI / 2 ],
+		[ 'lantern', [ - 1.75, 0, 0.5 ] ], [ 'lantern', [ 1.75, 0, 0.5 ] ],
+	],
+	'fantasy/fountain-square': [
+		[ 'fountain-round', [ 0, 0, 0 ] ], [ 'lantern', [ - 1.25, 0, 1.25 ] ], [ 'lantern', [ 1.25, 0, 1.25 ] ], [ 'lantern', [ - 1.25, 0, - 1.25 ] ], [ 'lantern', [ 1.25, 0, - 1.25 ] ],
+		[ 'hedge-large', [ - 0.6, 0, - 1.4 ], Math.PI / 2 ], [ 'hedge-large', [ 0.6, 0, - 1.4 ], Math.PI / 2 ], [ 'tree-high', [ - 1.75, 0, - 1.4 ] ], [ 'tree-high', [ 1.75, 0, - 1.4 ] ],
+	],
+	// Industrial: a wind farm, a tank farm, a works with its chimneys
+	'industrial/wind-farm': [ [ 'windmill', [ 0, 0, 0 ] ], [ 'windmill-low', [ - 0.85, 0, 0.35 ] ], [ 'windmill-low', [ 0.85, 0, - 0.35 ] ] ],
+	'industrial/tank-farm': [
+		[ 'detail-tank-large', [ 0, 0, 0 ] ], [ 'detail-tank', [ 1.35, 0, 0.45 ], Math.PI / 2 ], [ 'detail-tank', [ - 1.35, 0, 0.35 ], Math.PI / 2 ], [ 'detail-tank', [ 1.35, 0, - 0.45 ], Math.PI / 2 ],
+	],
+	'industrial/works': [ [ 'building-e', [ 0, 0, 0.25 ] ], [ 'chimney-medium', [ - 0.55, 0, - 0.75 ] ], [ 'chimney-medium', [ 0.15, 0, - 0.8 ] ], [ 'chimney-small', [ 0.65, 0, - 0.7 ] ] ],
+	// Suburb: a terrace of three, a house in its garden, a little park
+	'suburban/terrace': [ [ 'building-type-k', [ - 0.98, 0, 0 ] ], [ 'building-type-r', [ 0, 0, 0 ] ], [ 'building-type-k', [ 0.98, 0, 0 ] ] ],
+	'suburban/garden': [
+		[ 'building-type-m', [ 0, 0, - 0.2 ] ], [ 'tree-large', [ - 0.95, 0, 0.6 ] ], [ 'tree-large', [ 0.95, 0, 0.6 ] ], [ 'tree-large', [ - 0.95, 0, - 0.7 ] ],
+		[ 'planter', [ - 0.35, 0, 0.75 ] ], [ 'planter', [ 0.35, 0, 0.75 ] ],
+	],
+	'suburban/park': [
+		[ 'tree-large', [ - 0.8, 0, - 0.5 ] ], [ 'tree-large', [ 0.1, 0, - 0.7 ] ], [ 'tree-large', [ 0.9, 0, - 0.3 ] ], [ 'tree-large', [ - 0.5, 0, 0.4 ] ],
+		[ 'tree-large', [ 0.6, 0, 0.6 ] ], [ 'tree-small', [ 0, 0, 0 ] ], [ 'planter', [ - 1, 0, 0.8 ] ], [ 'planter', [ 1.05, 0, 0.9 ] ],
+	],
+	// Stadium: a race control tower, a start gantry
+	'racing/control-tower': [ [ 'pitsOffice', [ 0, 0, 0 ] ], [ 'pitsOffice', [ 0, 0.5, 0 ] ], [ 'pitsOfficeRoof', [ 0, 1, 0 ] ], [ 'radarEquipment', [ 0, 1.85, 0 ] ], [ 'flagCheckers', [ 0.4, 1.85, 0.4 ] ] ],
+	'racing/gantry': [ [ 'overheadRoundColored', [ 0, 0, 0 ] ], [ 'flagRed', [ - 1.1, 0, 0.3 ] ], [ 'flagGreen', [ 1.1, 0, 0.3 ] ] ],
+};
+
 const WALLS = {
 	stone: { door: 'wall-door', front: 'wall-window-shutters', side: 'wall-window-small', back: 'wall' },
 	wood: { door: 'wall-wood-door', front: 'wall-wood-window-shutters', side: 'wall-wood-window-shutters', back: 'wall-wood' },
@@ -284,14 +344,27 @@ function yRotation( angle ) {
 }
 
 // Merge a part file into `document` under a new node at (x, y, z), turned
-async function placePart( document, file, translation, angle = 0 ) {
+// and scaled. centred: (x, y, z) is where the middle of the part's
+// footprint goes, on its underside, rather than its origin.
+async function placePart( document, file, translation, angle = 0, { scale = 1, centred = false } = {} ) {
 
 	const part = await io.read( file );
 	const roots = part.getRoot().listScenes()[ 0 ].listChildren();
-	const map = mergeDocuments( document, part );
-	const holder = document.createNode().setTranslation( translation ).setRotation( yRotation( angle ) );
+	const offset = [ 0, 0, 0 ];
 
-	for ( const root of roots ) holder.addChild( map.get( root ) );
+	if ( centred ) {
+
+		const { min, max } = getBounds( part.getRoot().listScenes()[ 0 ] );
+		offset.splice( 0, 3, - ( min[ 0 ] + max[ 0 ] ) / 2, - min[ 1 ], - ( min[ 2 ] + max[ 2 ] ) / 2 );
+
+	}
+
+	const map = mergeDocuments( document, part );
+	const holder = document.createNode().setTranslation( translation ).setRotation( yRotation( angle ) ).setScale( [ scale, scale, scale ] );
+	const inner = document.createNode().setTranslation( offset );
+	holder.addChild( inner );
+
+	for ( const root of roots ) inner.addChild( map.get( root ) );
 	document.getRoot().listScenes()[ 0 ].addChild( holder );
 
 	for ( const scene of document.getRoot().listScenes() ) if ( scene !== document.getRoot().listScenes()[ 0 ] ) scene.dispose();
@@ -336,6 +409,20 @@ async function buildPrefab( spec ) {
 	for ( const [ x, z ] of spec.cells ) await placePart( document, resolve( dir, spec.roof + '.glb' ), [ x, top, z ] );
 	if ( spec.chimney ) await placePart( document, resolve( dir, 'chimney.glb' ), [ spec.cells[ spec.cells.length - 1 ][ 0 ], top - 0.6, 0 ] );
 	if ( spec.extra ) await placePart( document, resolve( dir, spec.extra[ 0 ] + '.glb' ), spec.extra[ 1 ], spec.extra[ 2 ] );
+
+	await document.transform( unpartition() );
+	return document;
+
+}
+
+async function buildComposite( id, parts ) {
+
+	const document = new Document().setLogger( new Logger( Logger.Verbosity.WARN ) );
+	document.createBuffer();
+	document.createScene();
+
+	const dir = resolve( SRC, id.split( '/' )[ 0 ] );
+	for ( const [ part, at, angle = 0, scale = 1 ] of parts ) await placePart( document, resolve( dir, part + '.glb' ), at, angle, { scale, centred: true } );
 
 	await document.transform( unpartition() );
 	return document;
@@ -573,18 +660,17 @@ for ( const id of [ 'track-straight', 'track-corner' ] ) {
 
 }
 
-// Scenery kits, the Racing Kit's palette and the Fantasy Town prefabs
+// Scenery kits, the Racing Kit's palette, the Fantasy Town houses and the
+// composite landmarks
 
-const PREFAB_PARTS = new Set( KITS.fantasy.models.slice( KITS.fantasy.models.indexOf( 'windmill' ) ) );
 const scenery = {};
 
 for ( const [ kit, def ] of Object.entries( KITS ) ) {
 
+	rmSync( resolve( OUT, kit ), { recursive: true, force: true } );
 	mkdirSync( resolve( OUT, kit ), { recursive: true } );
 
 	for ( const name of def.models ) {
-
-		if ( kit === 'fantasy' && PREFAB_PARTS.has( name ) ) continue;
 
 		const document = await io.read( resolve( SRC, kit, name + '.glb' ) );
 		if ( kit === 'racing' ) bakePalette( document );
@@ -597,8 +683,6 @@ for ( const [ kit, def ] of Object.entries( KITS ) ) {
 
 }
 
-writePalette();
-
 for ( const [ name, spec ] of Object.entries( PREFABS ) ) {
 
 	const document = await buildPrefab( spec );
@@ -607,6 +691,19 @@ for ( const [ name, spec ] of Object.entries( PREFABS ) ) {
 	report.push( [ 'fantasy/' + name + '.glb', await compress( document, name, resolve( OUT, 'fantasy', name + '.glb' ) ) ] );
 
 }
+
+for ( const [ id, parts ] of Object.entries( COMPOSITES ) ) {
+
+	const kit = id.split( '/' )[ 0 ];
+	const document = await buildComposite( id, parts );
+	if ( kit === 'racing' ) bakePalette( document );
+	else placeholderTextures( document, kit );
+	scenery[ id ] = { kit, ...await prepareScenery( document ) };
+	report.push( [ id + '.glb', await compress( document, id, resolve( OUT, id + '.glb' ) ) ] );
+
+}
+
+writePalette();
 
 writeFileSync( resolve( ROOT, 'js/SceneryList.js' ),
 	'// Generated by scripts/models.mjs; don\'t edit. Each scenery model\'s\n' +

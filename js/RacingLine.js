@@ -1,13 +1,19 @@
-import { STRIP_IN } from './TrackShape.js';
+import { STRIP_IN, WALL_FACE } from './TrackShape.js';
+import { RACE_LINES } from './RaceLines.js';
 
-// The NPCs' racing line and how fast it can be driven. The line is an
-// elastic band pulled tight between the walls (the centerline smoothed
-// within the road, keeping the wheels off the kerbs), which takes the
-// corners wide-tight-wide the way a racing driver does. Its speed profile
-// comes from its curvature (grip), capped at top speed, with braking zones
-// from a backward pass at the car's braking rate. On gravel the line keeps
-// to the inside, away from the drop, and crests over the drop are taken
-// below the speed that would launch the car off them.
+// The NPCs' racing line and how fast it can be driven. On the built-in
+// tracks it's the line the physics found fastest (`npm run sim --
+// --optimize`, saved in RaceLines.js): it may run over the kerbs and lean
+// on the walls, which cost nothing but the kerbs' drag, and it can cap the
+// speed where lifting pays (before a crest, on gravel). Elsewhere (the
+// editor's tracks, or a built-in layout changed since) it's the least-
+// curved line within the road, keeping the wheels off the kerbs: wide into
+// a corner, the apex, wide out.
+//
+// Its speed profile comes from its curvature (grip), capped at top speed,
+// with braking zones from a backward pass at the car's braking rate. On
+// gravel the line keeps to the inside, away from the drop, and crests over
+// the drop are taken below the speed that would launch the car off them.
 //
 // One per track, shared by every NPC (racingLine() caches it on the
 // centerline); speed profiles are cached by grip and braking.
@@ -18,10 +24,61 @@ import { STRIP_IN } from './TrackShape.js';
 export const DRIVE = { grip: 200, brake: 30, yaw: 99, top: 14.6 };
 
 const STEP = 1; // m between samples
-const ITERATIONS = 400;
 const EDGE = STRIP_IN - 0.6; // a car's outer wheels stay off the rumble strip
 const CLIFF_EDGE = 0.4; // how far toward the drop on gravel
+const REACH = WALL_FACE - 0.375; // optimized lines: up to leaning on the wall
+const CLIFF_REACH = 1.5; // and on gravel, this far toward the drop
+export const CONTROL = 3; // m between an optimized line's control points
 const GRAVITY = 9.81 * 1.5; // the spheres' gravityFactor (Physics.js)
+const SPAN = 2; // m either side for the line's heading and curvature
+const _a = [ 0, 0 ], _p = [ 0, 0 ], _b = [ 0, 0 ];
+
+// The least-curved line between the bounds: each point moves (along its
+// normal) to where it straightens the bend through its neighbours, the
+// minimum of the summed squared second differences
+function smooth( cx, cz, lx, lz, lo, hi, closed, iterations = 800 ) {
+
+	const n = cx.length;
+	const o = new Float64Array( n );
+	const at = ( k ) => closed ? ( k + n ) % n : Math.max( 0, Math.min( n - 1, k ) );
+
+	for ( let it = 0; it < iterations; it ++ ) {
+
+		for ( let i = 0; i < n; i ++ ) {
+
+			if ( ! closed && ( i < 2 || i > n - 3 ) ) continue;
+
+			const a = at( i - 2 ), b = at( i - 1 ), c = at( i + 1 ), d = at( i + 2 );
+			const tx = ( - ( cx[ a ] + lx[ a ] * o[ a ] ) + 4 * ( cx[ b ] + lx[ b ] * o[ b ] ) + 4 * ( cx[ c ] + lx[ c ] * o[ c ] ) - ( cx[ d ] + lx[ d ] * o[ d ] ) ) / 6;
+			const tz = ( - ( cz[ a ] + lz[ a ] * o[ a ] ) + 4 * ( cz[ b ] + lz[ b ] * o[ b ] ) + 4 * ( cz[ c ] + lz[ c ] * o[ c ] ) - ( cz[ d ] + lz[ d ] * o[ d ] ) ) / 6;
+			const want = ( tx - cx[ i ] ) * lx[ i ] + ( tz - cz[ i ] ) * lz[ i ];
+			o[ i ] = Math.max( lo[ i ], Math.min( hi[ i ], o[ i ] + ( want - o[ i ] ) * 1.6 ) );
+
+		}
+
+	}
+
+	return o;
+
+}
+
+// Which layout a saved line was optimized for (FNV-1a of the cells,
+// heights and gravel)
+export function lineHash( track ) {
+
+	const text = JSON.stringify( [ track.cells, track.heights || null, track.unsealed || null ] );
+	let h = 0x811c9dc5;
+
+	for ( let i = 0; i < text.length; i ++ ) {
+
+		h ^= text.charCodeAt( i );
+		h = Math.imul( h, 0x01000193 ) >>> 0;
+
+	}
+
+	return h.toString( 16 );
+
+}
 
 export function racingLine( line, shape = null ) {
 
@@ -36,7 +93,6 @@ export class RacingLine {
 
 		this.line = line;
 		this.shape = shape;
-		this.weight = shape && shape.track.aiLine !== undefined ? shape.track.aiLine : 1;
 
 		const n = Math.max( 8, Math.round( line.length / STEP ) );
 		const step = line.length / n;
@@ -45,6 +101,8 @@ export class RacingLine {
 
 		const cx = new Float64Array( n ), cz = new Float64Array( n ), lx = new Float64Array( n ), lz = new Float64Array( n );
 		const lo = new Float64Array( n ).fill( - EDGE ), hi = new Float64Array( n ).fill( EDGE );
+		this.lo = new Float64Array( n ).fill( - REACH ); // an optimized line's bounds
+		this.hi = new Float64Array( n ).fill( REACH );
 		this.gravel = new Uint8Array( n );
 		this.crest = new Float64Array( n ); // speed that would launch the car off a crest over a drop
 
@@ -58,8 +116,18 @@ export class RacingLine {
 			if ( shape && shape.isUnsealed( s ) ) {
 
 				this.gravel[ i ] = 1;
-				if ( shape.outsideAt( s ) > 0 ) hi[ i ] = CLIFF_EDGE;
-				else lo[ i ] = - CLIFF_EDGE;
+
+				if ( shape.outsideAt( s ) > 0 ) {
+
+					hi[ i ] = CLIFF_EDGE;
+					this.hi[ i ] = CLIFF_REACH;
+
+				} else {
+
+					lo[ i ] = - CLIFF_EDGE;
+					this.lo[ i ] = - CLIFF_REACH;
+
+				}
 
 				const d = 2;
 				const bend = - ( line.heightAt( s + d ) - 2 * line.heightAt( s ) + line.heightAt( s - d ) ) / ( d * d );
@@ -69,27 +137,70 @@ export class RacingLine {
 
 		}
 
-		// Pull the band tight
-		const o = new Float64Array( n );
-		const closed = line.closed;
+		this.cx = cx; this.cz = cz; this.lx = lx; this.lz = lz;
+		this.edges = [ lo, hi ];
 
-		for ( let it = 0; it < ITERATIONS; it ++ ) {
+		// The line optimized for this layout (npm run sim -- --optimize), or
+		// the smooth one
+		const saved = shape && RACE_LINES[ shape.track.id ];
+		this.optimized = Boolean( saved && saved.hash === lineHash( shape.track ) && line.closed );
 
-			for ( let i = 0; i < n; i ++ ) {
+		if ( this.optimized ) {
 
-				if ( ! closed && ( i === 0 || i === n - 1 ) ) continue;
+			this.useControl( saved.offsets.map( ( o ) => o / 100 ), saved.caps );
 
-				const a = ( i - 1 + n ) % n, b = ( i + 1 ) % n;
-				const mx = ( cx[ a ] + lx[ a ] * o[ a ] + cx[ b ] + lx[ b ] * o[ b ] ) / 2;
-				const mz = ( cz[ a ] + lz[ a ] * o[ a ] + cz[ b ] + lz[ b ] * o[ b ] ) / 2;
-				o[ i ] = Math.max( lo[ i ], Math.min( hi[ i ], ( mx - cx[ i ] ) * lx[ i ] + ( mz - cz[ i ] ) * lz[ i ] ) );
+		} else {
 
-			}
+			this.use( this.smoothLine() );
 
 		}
 
-		for ( let i = 0; i < n; i ++ ) o[ i ] *= this.weight;
-		this.offsets = o;
+	}
+
+	// The least-curved line within the road, wheels off the kerbs
+	smoothLine() {
+
+		return smooth( this.cx, this.cz, this.lx, this.lz, this.edges[ 0 ], this.edges[ 1 ], this.line.closed );
+
+	}
+
+	// How many control points an optimized line has (one every CONTROL m)
+	get controls() {
+
+		return Math.max( 4, Math.round( this.line.length / CONTROL ) );
+
+	}
+
+	// Drive a line given by offsets at its control points (a Catmull-Rom
+	// spline through them, kept within reach of the walls) and speed caps
+	// at them (m/s, 0 for none)
+	useControl( offsets, caps = null ) {
+
+		const n = this.n, k = offsets.length;
+		const o = new Float64Array( n ), c = caps ? new Float64Array( n ) : null;
+
+		for ( let i = 0; i < n; i ++ ) {
+
+			const u = i * k / n, j = Math.floor( u ), t = u - j;
+			const p0 = offsets[ ( j - 1 + k ) % k ], p1 = offsets[ j % k ], p2 = offsets[ ( j + 1 ) % k ], p3 = offsets[ ( j + 2 ) % k ];
+			const value = 0.5 * ( 2 * p1 + ( p2 - p0 ) * t + ( 2 * p0 - 5 * p1 + 4 * p2 - p3 ) * t * t + ( 3 * p1 - p0 - 3 * p2 + p3 ) * t * t * t );
+			o[ i ] = Math.max( this.lo[ i ], Math.min( this.hi[ i ], value ) );
+			if ( c ) c[ i ] = caps[ Math.round( u ) % k ];
+
+		}
+
+		this.use( o, c );
+
+	}
+
+	// Drive these offsets (one per sample, + left) and speed caps (m/s, 0
+	// for none) instead
+	use( offsets, caps = null ) {
+
+		const n = this.n;
+		const o = this.offsets = Float64Array.from( offsets );
+		this.caps = caps ? Float64Array.from( caps ) : null;
+		const { cx, cz, lx, lz } = this;
 
 		// Curvature of the line (Menger: 4·area / product of the sides),
 		// over a few metres so the samples' kinks don't count
@@ -122,6 +233,32 @@ export class RacingLine {
 
 	}
 
+	// A point on the line, taking `share` of its offset (out: [ x, z ])
+	pointAt( s, share, out ) {
+
+		const x = this.line.wrap( s ) / this.step;
+		const i = Math.floor( x ) % this.n, j = ( i + 1 ) % this.n, t = x - Math.floor( x );
+		const oi = this.offsets[ i ] * share, oj = this.offsets[ j ] * share;
+		out[ 0 ] = this.cx[ i ] + this.lx[ i ] * oi + ( this.cx[ j ] + this.lx[ j ] * oj - this.cx[ i ] - this.lx[ i ] * oi ) * t;
+		out[ 1 ] = this.cz[ i ] + this.lz[ i ] * oi + ( this.cz[ j ] + this.lz[ j ] * oj - this.cz[ i ] - this.lz[ i ] * oi ) * t;
+		return out;
+
+	}
+
+	// The line's heading at s (as the cars' headings: atan2( x, z )) and
+	// its curvature (rad/m, + where the heading grows), over ±SPAN m
+	pose( s, share, out ) {
+
+		const a = this.pointAt( s - SPAN, share, _a ), p = this.pointAt( s, share, _p ), b = this.pointAt( s + SPAN, share, _b );
+		const h0 = Math.atan2( p[ 0 ] - a[ 0 ], p[ 1 ] - a[ 1 ] ), h1 = Math.atan2( b[ 0 ] - p[ 0 ], b[ 1 ] - p[ 1 ] );
+		let turn = h1 - h0;
+		turn -= Math.round( turn / ( 2 * Math.PI ) ) * 2 * Math.PI;
+		out.heading = Math.atan2( b[ 0 ] - a[ 0 ], b[ 1 ] - a[ 1 ] );
+		out.curvature = 2 * turn / ( Math.hypot( p[ 0 ] - a[ 0 ], p[ 1 ] - a[ 1 ] ) + Math.hypot( b[ 0 ] - p[ 0 ], b[ 1 ] - p[ 1 ] ) || 1 );
+		return out;
+
+	}
+
 	// Speeds (m/s) along the line for a driver using `grip` of lateral
 	// acceleration and braking at `brake`
 	profile( grip, brake ) {
@@ -138,6 +275,7 @@ export class RacingLine {
 			const k = Math.max( 1e-4, this.curvature[ i ] );
 			v[ i ] = Math.min( DRIVE.top, Math.sqrt( g / k ), DRIVE.yaw / k );
 			if ( this.crest[ i ] ) v[ i ] = Math.min( v[ i ], this.crest[ i ] );
+			if ( this.caps && this.caps[ i ] ) v[ i ] = Math.min( v[ i ], this.caps[ i ] );
 
 		}
 

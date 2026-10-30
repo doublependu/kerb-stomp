@@ -19,8 +19,7 @@ import { GameAudio } from './Audio.js';
 import { loadBest, saveBest } from './LapTimer.js';
 import { Hud } from './Hud.js';
 import { ColorMapGLTFLoader, colormapLoaded, getColormap } from './Loader.js';
-import { planScenery, sceneryPads, boardMesh, sceneryModels, buildScenery } from './Scenery.js';
-import { SCENERY } from './SceneryList.js';
+import { planScenery, sceneryPads, boardMesh, sceneryModels, sceneryColormaps, buildScenery } from './Scenery.js';
 import { MODEL_URLS } from './Assets.js';
 import { PRESETS, detectTier, loadSetting, saveSetting, loadAutoTier, saveAutoTier, lowerTier, FrameMonitor } from './Quality.js';
 import { Shell, lockViewport } from './Shell.js';
@@ -30,7 +29,7 @@ import { setLambert } from './Materials.js';
 import { Debris } from './Debris.js';
 import { Wand } from './Wand.js';
 import { Occluders, splitArch } from './Occluders.js';
-import { Flyover } from './Flyover.js';
+import { Flyover, horizonMesh } from './Flyover.js';
 import { Podium, badgeCount } from './Podium.js';
 
 const params = new URLSearchParams( window.location.search );
@@ -219,6 +218,7 @@ async function init() {
 	let debris = null;
 	let fogNear = 30, fogFar = 55;
 	let viewWidth = 0, viewHeight = 0, viewPixelRatio = 0;
+	let flyover = null; // the aerial view before a race (Flyover.js)
 
 	function resize() {
 
@@ -241,6 +241,7 @@ async function init() {
 
 		scene.fog.near = fogNear + cam.extraDistance;
 		scene.fog.far = fogFar + cam.extraDistance;
+		if ( flyover ) flyoverView();
 
 		return true;
 
@@ -327,6 +328,8 @@ async function init() {
 	const trackGroups = buildTrack( scene, models, classic ? null : track.cells, { ...chunk, shape, bent, reserved: scenery.cells } );
 
 	for ( const mesh of [ sceneryPads( scenery, pieceMaterial ), boardMesh( scenery, pieceMaterial ) ] ) if ( mesh ) scene.add( mesh );
+	const horizon = horizonMesh( pieceMaterial, [ 0.031, 0.875 ], bounds.centerX, bounds.centerZ ); // the tiles' grass
+	scene.add( horizon );
 	performance.mark( 'kerb:track' );
 
 	// Shadows reach the hillside and anything standing on it
@@ -335,7 +338,7 @@ async function init() {
 
 	// The simulation, with the player's car on the start line
 
-	const race = new Race( { cells: track.cells, line, shape, classic, ai: track.ai } );
+	const race = new Race( { cells: track.cells, line, shape, classic, ai: track.ai, ace: track.ace, par: track.par } );
 	const player = race.addCar( getCar( settings.car ), models[ settings.car ], { player: true, name: 'You' } );
 	scene.add( player.vehicle.container );
 
@@ -641,31 +644,38 @@ async function init() {
 
 	// The fly-over before a race from the setup screen (not "Race again",
 	// not with reduced motion). A fresh key, tap or button skips it.
-	let flyover = null;
 	let skipFrom = 0;
 	const reducedMotion = window.matchMedia( '(prefers-reduced-motion: reduce)' );
 	const card = document.getElementById( 'flyover-card' );
 
 	function startFlyover() {
 
-		flyover = new Flyover( line, bounds );
+		flyover = new Flyover( line, bounds, cam.camera );
 		skipFrom = performance.now() + 300;
 		card.querySelector( 'h2' ).textContent = track.name;
 		card.querySelector( '.inspired' ).textContent = track.inspiredBy ? 'Inspired by ' + track.inspiredBy : '';
 		card.querySelector( '.laps' ).textContent = race.laps + ( race.laps === 1 ? ' lap' : ' laps' ) + ' · ' + race.cars.length + ' cars';
 		document.body.dataset.flyover = '';
+		flyoverView();
 
-		// See the whole track: no fog, a far horizon
-		scene.fog.near = 1e4;
-		scene.fog.far = 2e4;
-		cam.camera.far = 600;
+	}
+
+	// See the whole track: haze only past the scenery, grass to a far
+	// horizon, shadows all over
+	function flyoverView() {
+
+		flyover.fog( scene.fog, cam.camera.position );
+		cam.camera.far = 2000;
 		cam.camera.updateProjectionMatrix();
+		horizon.visible = true;
+		sun.fit( flyover.footprint );
 
 	}
 
 	function endFlyover() {
 
 		flyover = null;
+		horizon.visible = false;
 		delete document.body.dataset.flyover;
 		viewWidth = 0;
 		resize(); // the chase camera's fog and far plane again
@@ -693,8 +703,7 @@ async function init() {
 		const ids = sceneryModels( scenery );
 		const loaded = await Promise.all( ids.map( ( id ) => loadModel( id ).catch( () => null ) ) );
 		const variations = track.variations || {};
-		const kits = new Set( ids.map( ( id ) => SCENERY[ id ].kit ) );
-		await Promise.all( [ ...kits ].map( ( kit ) => colormapLoaded( variations[ kit ] ? kit + '-' + variations[ kit ] : kit ) ) );
+		await Promise.all( sceneryColormaps( scenery, variations ).map( colormapLoaded ) );
 
 		const group = buildScenery( scenery, Object.fromEntries( ids.map( ( id, i ) => [ id, loaded[ i ] ] ) ), { variations, baseMaterial: pieceMaterial, colormap: getColormap } );
 		setLambert( group, preset.lambert );
@@ -954,6 +963,7 @@ async function init() {
 			_chaseLook.copy( cam.lookPoint );
 			flyover.pose( flyover.t, _chasePosition, _chaseLook, cam.camera.position, _flyLook );
 			cam.camera.lookAt( _flyLook );
+			flyover.fog( scene.fog, cam.camera.position );
 			if ( flyover.done ) endFlyover();
 
 		}
@@ -967,7 +977,7 @@ async function init() {
 
 		}
 
-		sun.update( cam.lookPoint );
+		sun.update( flyover ? flyover.centre : cam.lookPoint );
 		debris.update( frameDt );
 		wand.update( frameDt, race.cars );
 		occluders.update( frameDt, cam.camera, _camTarget );
@@ -1094,6 +1104,32 @@ async function init() {
 
 				_projected.set( x, y, z ).project( cam.camera );
 				return [ _projected.x, _projected.y ];
+
+			},
+			// A still from anywhere (scripts/playtest 'scenery'): the scene drawn
+			// from position toward look, as a JPEG data URL, with no fog and
+			// the sun's shadows round the look point
+			view( position, look, fov = 50 ) {
+
+				const camera = new THREE.PerspectiveCamera( fov, cam.camera.aspect, 0.5, 1000 );
+				camera.position.set( ...position );
+				camera.up.set( 0, 0, - 1 );
+				camera.lookAt( ...look );
+				const fog = [ scene.fog.near, scene.fog.far ];
+				scene.fog.near = 1e4;
+				scene.fog.far = 2e4;
+				sun.update( new THREE.Vector3( ...look ) );
+				renderer.render( scene, camera );
+				const url = renderer.domElement.toDataURL( 'image/jpeg', 0.85 );
+				[ scene.fog.near, scene.fog.far ] = fog;
+				return url;
+
+			},
+			sceneryLoaded: () => performance.getEntriesByName( 'kerb:scenery' ).length > 0,
+			// The fly-over's clock and the corners of the box it keeps in view
+			flyover() {
+
+				return flyover ? { t: flyover.t, duration: flyover.duration, corners: flyover.corners.map( ( c ) => [ c.x + flyover.centre.x, c.y + flyover.centre.y, c.z + flyover.centre.z ] ) } : null;
 
 			},
 			// Hide parts of the scene to attribute frame cost (scripts/bench.mjs)

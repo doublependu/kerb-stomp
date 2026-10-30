@@ -12,12 +12,13 @@ export const GROUND_Y = - 0.115;
 export const ROAD_Y = - 0.125;
 
 // Lateral offsets from the centerline (m), measured from the Starter Kit
-// pieces: the rumble strip, the red-and-white kerb, the wall's inner face
-// and centre, and the cell edge
+// pieces: the rumble strip, the red-and-white kerb, the wall's inner face,
+// centre and outer face, and the cell edge
 export const STRIP_IN = 2.63;
 export const KERB_IN = 3.0;
 export const WALL_FACE = 3.375;
 export const WALL_CENTER = 3.5625;
+export const WALL_OUTER = 3.75;
 export const CELL_HALF = CELL / 2;
 
 const TERRAIN_STEP = CELL / 4;

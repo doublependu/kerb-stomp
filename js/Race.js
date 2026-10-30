@@ -7,7 +7,7 @@ import { computeTrackBounds, computeSpawnPosition, TRACK_CELLS } from './Track.j
 import { CELL } from './TrackPath.js';
 import { LapCounter } from './LapTimer.js';
 import { resolveCarCollisions } from './CarCollisions.js';
-import { RUBBER_BAND, CLASSIC_AI_LAPS, FIRST_LAP, ACES, correct, startFor, lean } from './Difficulty.js';
+import { RUBBER_BAND, CLASSIC_AI_LAPS, CLASSIC_ACE, FIRST_LAP, ACES, correct, startFor, lean } from './Difficulty.js';
 import { racingLine } from './RacingLine.js';
 
 // The simulation: physics world, cars, laps and race order. No rendering or
@@ -49,7 +49,7 @@ function wrapHalf( d, length ) {
 
 export class Race {
 
-	constructor( { cells, line, shape = null, classic = false, ai = CLASSIC_AI_LAPS } ) {
+	constructor( { cells, line, shape = null, classic = false, ai = CLASSIC_AI_LAPS, ace = CLASSIC_ACE, par = ai[ 0 ] } ) {
 
 		this.cells = cells;
 		this.line = line;
@@ -57,6 +57,8 @@ export class Race {
 		this.racing = racingLine( line, this.shape );
 		this.classic = classic;
 		this.ai = ai;
+		this.aceLap = ace;
+		this.par = par;
 
 		this.mode = 'timetrial';
 		this.phase = 'grid';
@@ -623,21 +625,21 @@ export class Race {
 
 	// Aim the NPCs at a reference lap: each targets its pace factor of it, and
 	// restarts from the skill and pace the calibration gives for that. Not
-	// measured (a first race on the track): the fastest slots go to the aces.
+	// measured (a first race on the track): the fastest slots go to the aces,
+	// held at the track's ace lap whatever the player does.
 	aimField( reference, measured = true ) {
 
 		this.reference = reference;
 		this.referenceMeasured = measured;
-		const kinder = 1 + lean( reference, this.ai );
+		const kinder = 1 + lean( reference, this.par );
 		const npcs = this.cars.filter( ( car ) => ! car.player && car.paceFactor !== null );
 		const aces = measured ? [] : npcs.slice().sort( ( a, b ) => a.paceFactor - b.paceFactor ).slice( 0, ACES.length );
-		const best = this.ai[ this.ai.length - 1 ];
 
 		for ( const car of npcs ) {
 
 			const ace = aces.indexOf( car );
-			car.ace = ace >= 0;
-			car.targetLap = car.ace ? ACES[ ace ] * best : car.paceFactor * reference * kinder;
+			car.ace = car.driver.ace = ace >= 0;
+			car.targetLap = car.ace ? ACES[ ace ] * this.aceLap : car.paceFactor * reference * kinder;
 			const start = startFor( car.targetLap, this.ai );
 			car.driver.setSkill( start.skill );
 			car.driver.pace = start.pace;
@@ -651,7 +653,7 @@ export class Race {
 	adjustPace( car ) {
 
 		const driver = car.driver;
-		if ( ! driver || car.player || car.ace || car.targetLap === null || car.lapTimes.length < 2 ) return;
+		if ( ! driver || car.player || car.targetLap === null || car.lapTimes.length < 2 ) return;
 
 		correct( driver, car.counter.lastLap, car.targetLap );
 

@@ -1,12 +1,18 @@
 // Check the built-in track layouts (js/Tracks.js) and draw them. For hilly
 // tracks also: the steepest gradient, and each crest's radius and the speed
 // at which a car leaves the ground over it (v² = g · R; top speed ~14.6 m/s).
+// Fails on any scenery footprint closer than Scenery.CLEARANCE to the
+// walls' outer face; warns when a track's optimized racing line was made
+// for a different layout (rerun `npm run sim -- --optimize --tracks <id>`).
 //
 //   npm run tracks
 
 import { TRACKS, trackLine } from '../js/Tracks.js';
-import { checkLayout } from '../js/TrackPath.js';
+import { checkLayout, CELL } from '../js/TrackPath.js';
 import { TrackShape } from '../js/TrackShape.js';
+import { planScenery, footprint, roadGap, CLEARANCE } from '../js/Scenery.js';
+import { RACE_LINES } from '../js/RaceLines.js';
+import { lineHash } from '../js/RacingLine.js';
 
 const GRAVITY = 9.81 * 1.5;
 const MAX_GRADIENT = 0.2;
@@ -81,6 +87,29 @@ for ( const track of TRACKS ) {
 		}
 
 	}
+
+	// Scenery: nothing on the road or over a wall
+	const plan = planScenery( shape, track );
+	const kits = new Set( plan.items.map( ( item ) => item.id.split( '/' )[ 0 ] ) );
+	let onRoad = 0;
+
+	for ( const item of plan.items ) {
+
+		const gap = roadGap( line, footprint( item ) );
+		if ( gap >= CLEARANCE - 1e-6 ) continue;
+		problems.push( `${ item.id } in cell ${ Math.floor( item.x / CELL ) },${ Math.floor( item.z / CELL ) } is ${ gap < 0 ? ( - gap ).toFixed( 2 ) + ' m over the wall' : gap.toFixed( 2 ) + ' m outside the wall' } (needs ${ CLEARANCE } m)` );
+		onRoad ++;
+
+	}
+
+	console.log( `  scenery: ${ plan.items.length } items from ${ kits.size } kit${ kits.size === 1 ? '' : 's' } (${ [ ...kits ].join( ', ' ) }), ${ plan.boards.length } boards${ onRoad ? `, ${ onRoad } too close to the road` : '' }` );
+
+	// The optimized racing line, if it's for this layout
+	const saved = RACE_LINES[ track.id ];
+	if ( ! saved ) console.log( '  racing line: not optimized (NPCs drive the smooth line)' );
+	else if ( saved.hash !== lineHash( track ) ) console.log( `  ⚠ racing line: optimized for a different layout; NPCs drive the smooth line until \`npm run sim -- --optimize --tracks ${ track.id }\`` );
+
+	failed += onRoad;
 
 	for ( const p of problems ) console.log( '  ✗ ' + p );
 

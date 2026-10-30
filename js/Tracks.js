@@ -9,14 +9,16 @@
 // laps: race length (aiming for 60–90 s races). par: an average keyboard
 // player's lap (s), the NPCs' reference pace before the player has a best lap
 // on the track. ai: an NPC's lap at full pace by skill 0, 0.25, 0.5, 0.75, 1
-// (`npm run sim -- --calibrate`; par is about the skill 0.5 lap).
+// (`npm run sim -- --calibrate`; par is between the skill 0 and 0.25 laps:
+// the best NPCs are now well beyond a keyboard player).
 //
-// aiLine: how much of the racing line NPCs take (RacingLine.js); on the
-// oval, holding the tight inside line flat out costs them more than it saves.
+// ace: the first ace's lap in a first race here (Difficulty.ACES): 10%
+// under plan_2's best NPC, which a player beat by 4 s. The best NPC now laps
+// 10–30% under that (ai[ 4 ]); lower ace toward it to make the aces harder.
 //
-// scenery: [ first cell, zone ] along the lap (js/Scenery.js), so each
-// stretch looks like nowhere else on the track; variations: a kit's
-// alternative colormap for this track.
+// theme: the scenery round the whole track (js/Scenery.js THEMES; Classic
+// and the editor's tracks get the forest's landmarks only); variations: a
+// kit's alternative colormap for this track.
 //
 // heights: road height (m) at the centre of each layout cell, for hills (a
 // crest is a cell higher than both neighbours). unsealed: [ first, last ]
@@ -26,7 +28,7 @@
 
 import { TRACK_CELLS, decodeCells } from './Track.js';
 import { layoutCells, centerline } from './TrackPath.js';
-import { CLASSIC_AI_LAPS } from './Difficulty.js';
+import { CLASSIC_AI_LAPS, CLASSIC_ACE } from './Difficulty.js';
 
 export const TRACKS = [
 	{
@@ -36,7 +38,9 @@ export const TRACKS = [
 		laps: 5,
 		par: 14.8,
 		ai: CLASSIC_AI_LAPS,
+		ace: CLASSIC_ACE,
 		cells: TRACK_CELLS,
+		theme: 'forest',
 	},
 	{
 		id: 'indianapolis',
@@ -44,11 +48,11 @@ export const TRACKS = [
 		inspiredBy: 'the Indianapolis oval: four left turns, two long straights, two short chutes',
 		laps: 5,
 		par: 16.4,
-		ai: [ 16.9, 15.33, 14.58, 14.07, 13.8 ],
+		ai: [ 20.07, 17.07, 14.1, 11.7, 11.42 ],
+		ace: 12.4,
 		layout: 'SSSL SSL SSSSSSSL SSL SSSS',
 		heading: 'N',
-		aiLine: 0,
-		scenery: [ [ 0, 'paddock' ], [ 3, 'suburb' ], [ 7, 'industrial' ], [ 14, 'forest' ], [ 18, 'paddock' ] ],
+		theme: 'stadium',
 	},
 	{
 		id: 'monza',
@@ -56,10 +60,11 @@ export const TRACKS = [
 		inspiredBy: 'Monza: the Rettifilo, Roggia and Ascari chicanes, Curva Grande, the Lesmos and Parabolica',
 		laps: 3,
 		par: 32.5,
-		ai: [ 35.75, 31.87, 29.43, 27.9, 24.6 ],
+		ai: [ 37.57, 33.27, 26.27, 20.18, 17.78 ],
+		ace: 22.1,
 		layout: 'SSSSS RL S R SS LR S R SS RL SSSS LR SS R SSSSS R SS',
 		heading: 'N',
-		scenery: [ [ 0, 'paddock' ], [ 5, 'forest' ], [ 11, 'village' ], [ 17, 'forest' ], [ 23, 'industrial' ], [ 28, 'forest' ], [ 33, 'paddock' ] ],
+		theme: 'village',
 		variations: { fantasy: 'a' },
 	},
 	{
@@ -68,11 +73,12 @@ export const TRACKS = [
 		inspiredBy: 'Monaco: Sainte Dévote, Casino, the Grand Hotel hairpin, the tunnel, the swimming pool and Rascasse',
 		laps: 2,
 		par: 37.2,
-		ai: [ 41.93, 38.0, 33.37, 27.32, 25.18 ],
+		ai: [ 40.48, 33.15, 26.87, 22.88, 19.33 ],
+		ace: 22.7,
 		layout: 'SS R S LR S R LSL SS R S R SSSSS LR S R SS RL SL R SSS R SS',
 		heading: 'E',
-		scenery: [ [ 0, 'paddock' ], [ 2, 'suburb' ], [ 7, 'village' ], [ 13, 'suburb' ], [ 16, 'industrial' ], [ 27, 'village' ], [ 32, 'suburb' ] ],
-		variations: { suburban: 'b', industrial: 'a' },
+		theme: 'suburb',
+		variations: { suburban: 'b' },
 	},
 	{
 		id: 'suzuka',
@@ -80,13 +86,14 @@ export const TRACKS = [
 		inspiredBy: 'Suzuka: the S-curves, Degner, the Hairpin, Spoon, 130R and the figure-8 crossover',
 		laps: 2,
 		par: 40.2,
-		ai: [ 43.97, 39.03, 33.47, 32.15, 29.67 ],
+		ai: [ 41.45, 34.45, 27.8, 25.2, 24.15 ],
+		ace: 26.7,
 		//       F  S  T1 S  T2 S-curves     Dunlop Degner 1        Degner 2  under the bridge  Hairpin   200R Spoon         back straight, over the bridge     130R chicane  last  S  S
 		layout: 'S  S  R  S  R  L  R  S  S  S  L      R      S  S  S  R        S  S  S  S        L  S  L   R  S  L  S  L   S  S  S  S  S  S  L    R  L     R     S  S',
 		heights: [ 0, 0, 0, 0, 0, 0.4, 0.9, 1.3, 1.5, 1.5, 1.3, 0.9, 0.5, 0.2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.3, 0.6, 0.6, 0.6, 1.1, 1.9, 2.8, 3.5, 4.0, 2.6, 1.6, 0.7, 0.1, 0, 0, 0 ],
 		heading: 'E',
-		scenery: [ [ 0, 'paddock' ], [ 2, 'village' ], [ 10, 'forest' ], [ 16, 'industrial' ], [ 23, 'forest' ], [ 28, 'suburb' ], [ 34, 'paddock' ] ],
-		variations: { suburban: 'c', industrial: 'c' },
+		theme: 'industrial',
+		variations: { industrial: 'c' },
 	},
 	{
 		id: 'bathurst',
@@ -94,14 +101,14 @@ export const TRACKS = [
 		inspiredBy: 'Mount Panorama, Bathurst: up the Mountain Straight and The Cutting, across the top past Skyline, down the Esses and the Dipper, and Conrod Straight',
 		laps: 2,
 		par: 33.6,
-		ai: [ 40.97, 36.5, 34.45, 31.08, 27.27 ],
+		ai: [ 41.62, 30.88, 24.58, 22.75, 22.65 ],
+		ace: 24.5,
 		//       F  S  Hell Mountain Straight  Griffins Cutting S  Reid Sulman McPhillamy Skyline S  Esses     Dipper S  Forrest  Conrod Straight          Chase Murray's S  S
 		layout: 'S  S  L    S   S   S   S      R        L       S  L    R      L          R       S  L  R      L      S  L        S  S  S  S  S  S  S  S  R  L  S  L        S  S',
 		heights: [ 0, 0, 0, 0.5, 1, 1.7, 2.4, 3, 3.8, 4.6, 5.2, 5.6, 5.9, 6, 6, 5, 4.2, 3.6, 3.2, 3, 2.8, 2.2, 1, 2.2, 0.8, 0.3, 0.1, 0, 0, 0, 0, 0, 0, 0 ],
 		unsealed: [ [ 12, 14 ] ],
 		heading: 'E',
-		scenery: [ [ 0, 'paddock' ], [ 2, 'suburb' ], [ 7, 'forest' ], [ 20, 'industrial' ], [ 28, 'suburb' ] ],
-		variations: { suburban: 'a' },
+		theme: 'forest',
 	},
 ];
 
@@ -151,6 +158,7 @@ export function resolveTrack( params ) {
 				laps: 3,
 				par: TRACKS[ 0 ].par * scale,
 				ai: CLASSIC_AI_LAPS.map( ( t ) => t * scale ),
+				ace: CLASSIC_ACE * scale,
 				raceable: line.closed && cells.length > 3,
 			};
 
