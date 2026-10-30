@@ -13,8 +13,10 @@
 // the best NPCs are now well beyond a keyboard player).
 //
 // ace: the first ace's lap in a first race here (Difficulty.ACES): 10%
-// under plan_2's best NPC, which a player beat by 4 s. The best NPC now laps
-// 10–30% under that (ai[ 4 ]); lower ace toward it to make the aces harder.
+// under plan_2's best NPC, which a player beat by 4 s, scaled down with
+// everyone's laps on Suzuka and Bathurst when the ride got smooth (plan_4).
+// The best NPC now laps 10–30% under that (ai[ 4 ]); lower ace toward it to
+// make the aces harder.
 //
 // theme: the scenery round the whole track (js/Scenery.js THEMES; Classic
 // and the editor's tracks get the forest's landmarks only); variations: a
@@ -85,9 +87,9 @@ export const TRACKS = [
 		name: 'Suzuka',
 		inspiredBy: 'Suzuka: the S-curves, Degner, the Hairpin, Spoon, 130R and the figure-8 crossover',
 		laps: 2,
-		par: 40.2,
-		ai: [ 41.45, 34.45, 27.8, 25.2, 24.15 ],
-		ace: 26.7,
+		par: 36.2,
+		ai: [ 41.58, 34.13, 28.88, 22.15, 19.93 ],
+		ace: 24,
 		//       F  S  T1 S  T2 S-curves     Dunlop Degner 1        Degner 2  under the bridge  Hairpin   200R Spoon         back straight, over the bridge     130R chicane  last  S  S
 		layout: 'S  S  R  S  R  L  R  S  S  S  L      R      S  S  S  R        S  S  S  S        L  S  L   R  S  L  S  L   S  S  S  S  S  S  L    R  L     R     S  S',
 		heights: [ 0, 0, 0, 0, 0, 0.4, 0.9, 1.3, 1.5, 1.5, 1.3, 0.9, 0.5, 0.2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.3, 0.6, 0.6, 0.6, 1.1, 1.9, 2.8, 3.5, 4.0, 2.6, 1.6, 0.7, 0.1, 0, 0, 0 ],
@@ -100,9 +102,9 @@ export const TRACKS = [
 		name: 'Bathurst',
 		inspiredBy: 'Mount Panorama, Bathurst: up the Mountain Straight and The Cutting, across the top past Skyline, down the Esses and the Dipper, and Conrod Straight',
 		laps: 2,
-		par: 33.6,
-		ai: [ 41.62, 30.88, 24.58, 22.75, 22.65 ],
-		ace: 24.5,
+		par: 30.2,
+		ai: [ 40.45, 32.63, 25.47, 20.15, 18.03 ],
+		ace: 22,
 		//       F  S  Hell Mountain Straight  Griffins Cutting S  Reid Sulman McPhillamy Skyline S  Esses     Dipper S  Forrest  Conrod Straight          Chase Murray's S  S
 		layout: 'S  S  L    S   S   S   S      R        L       S  L    R      L          R       S  L  R      L      S  L        S  S  S  S  S  S  S  S  R  L  S  L        S  S',
 		heights: [ 0, 0, 0, 0.5, 1, 1.7, 2.4, 3, 3.8, 4.6, 5.2, 5.6, 5.9, 6, 6, 5, 4.2, 3.6, 3.2, 3, 2.8, 2.2, 1, 2.2, 0.8, 0.3, 0.1, 0, 0, 0, 0, 0, 0, 0 ],
@@ -125,6 +127,11 @@ export function trackLine( track ) {
 
 }
 
+// Scenery layouts committed for a track (the editor's "Copy layout"):
+// js/layouts/<track id>.json, { "scenery": "…" }. These become that track's
+// scenery for everyone. Vite only: Node's tools see the planner's.
+const LAYOUTS = import.meta.glob ? import.meta.glob( './layouts/*.json', { eager: true, import: 'default' } ) : {};
+
 const CLASSIC_LENGTH = centerline( TRACK_CELLS ).length;
 const STORAGE_KEY = 'kerb.track';
 
@@ -135,7 +142,9 @@ export function getTrack( id ) {
 }
 
 // The track for this page load: ?map= (a custom track from the editor), then
-// ?track=, then the last one played
+// ?track=, then the last one played. &scenery= is an edited layout (Scenery.js
+// encodeLayout), on a built-in track it keeps the track and its records.
+// &theme= is a custom track's.
 export function resolveTrack( params ) {
 
 	const map = params.get( 'map' );
@@ -160,6 +169,8 @@ export function resolveTrack( params ) {
 				ai: CLASSIC_AI_LAPS.map( ( t ) => t * scale ),
 				ace: CLASSIC_ACE * scale,
 				raceable: line.closed && cells.length > 3,
+				theme: params.get( 'theme' ) || undefined,
+				scenery: params.get( 'scenery' ) || undefined,
 			};
 
 		} catch {
@@ -183,7 +194,8 @@ export function resolveTrack( params ) {
 	}
 
 	const track = getTrack( id ) || TRACKS[ 0 ];
-	return { ...track, raceable: true };
+	const committed = LAYOUTS[ `./layouts/${ track.id }.json` ];
+	return { ...track, raceable: true, scenery: params.get( 'scenery' ) || ( committed && committed.scenery ) || undefined };
 
 }
 

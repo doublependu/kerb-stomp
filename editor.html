@@ -103,6 +103,52 @@
 		}
 		#toast.show { opacity: 1; }
 
+		#scenery-panel {
+			position: fixed;
+			top: 12px;
+			right: 12px;
+			bottom: 12px;
+			width: min(240px, calc(100vw - 24px));
+			display: flex;
+			flex-direction: column;
+			gap: 8px;
+			padding: 10px;
+			border-radius: 12px;
+			background: rgba(28, 32, 41, 0.92);
+			color: #fff;
+			font: 13px system-ui, sans-serif;
+			z-index: 20;
+		}
+
+		#scenery-panel[hidden], #scenery-panel .row[hidden] { display: none; }
+		#scenery-panel .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+
+		#scenery-panel button, #scenery-panel select {
+			flex: 1 1 auto;
+			min-height: 34px;
+			padding: 4px 8px;
+			border: 0;
+			border-radius: 8px;
+			background: rgba(255, 255, 255, 0.12);
+			color: inherit;
+			font: inherit;
+			cursor: pointer;
+		}
+
+		#scenery-panel button:hover { background: rgba(255, 255, 255, 0.22); }
+		#scenery-panel button.active { background: #ffc83d; color: #1c2029; }
+		#scenery-panel button:disabled { opacity: 0.4; cursor: default; }
+		#scenery-status { min-height: 18px; opacity: 0.85; }
+		#palette { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+		#palette h3 { margin: 8px 0 0; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.6; }
+		#palette button { flex: none; text-align: left; }
+
+		@media (max-width: 700px) {
+
+			#scenery-panel { top: auto; left: 12px; width: auto; bottom: 84px; max-height: 42vh; }
+
+		}
+
 		#github-link {
 			position: absolute;
 			top: 12px;
@@ -138,6 +184,9 @@
 		<button id="btn-erase" title="Erase (2)" aria-label="Erase">
 			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>
 		</button>
+		<button id="btn-scenery" title="Scenery (4)" aria-label="Scenery">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 6 10h3l-4 6h14l-4-6h3z"/><line x1="12" y1="16" x2="12" y2="22"/></svg>
+		</button>
 		<div class="separator"></div>
 		<button id="btn-play" class="action" title="Play track" aria-label="Play track">
 			<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
@@ -148,13 +197,48 @@
 		</button>
 	</div>
 
+	<div id="scenery-panel" hidden>
+		<div class="row">
+			<button id="sc-left" title="Turn left (Q; with Shift 90°)" aria-label="Turn left">⟲</button>
+			<button id="sc-right" title="Turn right (E; with Shift 90°)" aria-label="Turn right">⟳</button>
+			<button id="sc-delete" title="Remove (Delete)">Remove</button>
+		</div>
+		<div class="row">
+			<button id="sc-undo" title="Undo (Ctrl+Z)">Undo</button>
+			<button id="sc-redo" title="Redo (Ctrl+Shift+Z)">Redo</button>
+			<button id="sc-reset" title="Back to the generated scenery">Reset</button>
+		</div>
+		<div class="row">
+			<button id="sc-copy" title="Copy this layout, to save as js/layouts/&lt;track&gt;.json">Copy layout</button>
+		</div>
+		<div class="row" id="sc-theme-row">
+			<select id="sc-theme" aria-label="Theme">
+				<option value="">No theme</option>
+				<option value="forest">Forest</option>
+				<option value="stadium">Stadium</option>
+				<option value="village">Village</option>
+				<option value="suburb">Suburb</option>
+				<option value="industrial">Industrial</option>
+			</select>
+		</div>
+		<div id="scenery-status"></div>
+		<div id="palette"></div>
+	</div>
+
 	<div id="toast"></div>
 
 	<script type="module">
 	import * as THREE from 'three';
-	import { ORIENT_DEG, CELL_RAW, GRID_SCALE, encodeCells, decodeCells } from './js/Track.js';
-	import { ColorMapGLTFLoader } from './js/Loader.js';
+	import { ORIENT_DEG, CELL_RAW, GRID_SCALE, encodeCells, decodeCells, computeTrackBounds } from './js/Track.js';
+	import { ColorMapGLTFLoader, getColormap, colormapLoaded } from './js/Loader.js';
 	import { MODEL_URLS } from './js/Assets.js';
+	import { getTrack, resolveTrack, trackLine } from './js/Tracks.js';
+	import { centerline } from './js/TrackPath.js';
+	import { TrackShape, ROAD_Y } from './js/TrackShape.js';
+	import { bendTrack } from './js/Bend.js';
+	import { SCENERY } from './js/SceneryList.js';
+	import { CATALOG, scaleOf } from './js/SceneryCatalog.js';
+	import { planScenery, encodeLayout, footprint, roadGap, roadSamples, hidesRoad, colormapOf, CLEARANCE } from './js/Scenery.js';
 
 	// ─── Auto-tile lookup ─────────────────────────────────────
 	// Bitmask: N=8 S=4 E=2 W=1
@@ -184,7 +268,15 @@
 	// ─── State ────────────────────────────────────────────────
 
 	const grid = new Map(); // "gx,gz" → { type, orient, isFinish, mesh }
-	let tool = 'road'; // 'road', 'erase', 'pan'
+	let tool = 'road'; // 'road', 'erase', 'pan', 'scenery'
+
+	// A built-in track (?track=) keeps its scenery, laps and records as long as
+	// its road isn't touched. Hills and crossings can't be drawn here, so on
+	// those only the scenery can be edited.
+	const params = new URLSearchParams( window.location.search );
+	const builtIn = getTrack( params.get( 'track' ) ) ? resolveTrack( params ) : null;
+	const roadLocked = Boolean( builtIn && builtIn.heights );
+	let roadEdited = false;
 
 	function cellKey( gx, gz ) { return gx + ',' + gz; }
 
@@ -303,7 +395,7 @@
 
 	const loader = new ColorMapGLTFLoader();
 
-	const modelNames = [ 'track-straight', 'track-corner', 'track-bump', 'track-finish' ];
+	const modelNames = [ 'track-straight', 'track-corner', 'track-bump', 'track-finish', ...( roadLocked ? [ 'track-straight-gravel', 'track-corner-gravel' ] : [] ) ];
 	const models = {};
 
 	async function loadModels() {
@@ -844,12 +936,28 @@
 
 		const encoded = encodeCells( arr );
 		localStorage.setItem( 'racing-editor-cells', encoded );
+		roadEdited = true;
 
 	}
 
 	function loadSaved() {
 
-		const params = new URLSearchParams( window.location.search );
+		if ( builtIn ) {
+
+			if ( roadLocked ) return drawHills();
+
+			for ( const [ gx, gz, type, orient ] of builtIn.cells ) {
+
+				const cell = { type, orient, isFinish: type === 'track-finish', mesh: null };
+				grid.set( cellKey( gx, gz ), cell );
+				placeMesh( gx, gz, cell );
+
+			}
+
+			return;
+
+		}
+
 		const mapParam = params.get( 'map' );
 		const encoded = mapParam || localStorage.getItem( 'racing-editor-cells' );
 
@@ -895,15 +1003,23 @@
 	const btnRoad = document.getElementById( 'btn-road' );
 	const btnErase = document.getElementById( 'btn-erase' );
 	const btnPan = document.getElementById( 'btn-pan' );
+	const btnScenery = document.getElementById( 'btn-scenery' );
 
 	function selectTool( t ) {
+
+		if ( roadLocked && ( t === 'road' || t === 'erase' ) ) return;
 
 		tool = t;
 		btnRoad.classList.toggle( 'active', t === 'road' );
 		btnErase.classList.toggle( 'active', t === 'erase' );
 		btnPan.classList.toggle( 'active', t === 'pan' );
+		btnScenery.classList.toggle( 'active', t === 'scenery' );
 
-		if ( t === 'pan' ) clearGhost();
+		if ( t === 'pan' || t === 'scenery' ) clearGhost();
+
+		document.getElementById( 'scenery-panel' ).hidden = t !== 'scenery';
+		if ( t === 'scenery' ) openScenery();
+		else closeScenery();
 
 		updateCursor();
 
@@ -912,6 +1028,7 @@
 	btnRoad.addEventListener( 'click', () => selectTool( 'road' ) );
 	btnErase.addEventListener( 'click', () => selectTool( 'erase' ) );
 	btnPan.addEventListener( 'click', () => selectTool( 'pan' ) );
+	btnScenery.addEventListener( 'click', () => selectTool( 'scenery' ) );
 
 	document.getElementById( 'toolbar' ).addEventListener( 'pointerenter', clearGhost );
 
@@ -931,15 +1048,17 @@
 
 	document.getElementById( 'btn-play' ).addEventListener( 'click', () => {
 
-		if ( grid.size === 0 ) {
+		if ( grid.size === 0 && ! roadLocked ) {
 
 			showToast( 'Draw some road first!' );
 			return;
 
 		}
 
-		const encoded = encodeCells( getCellsArray() );
-		window.open( 'index.html?map=' + encoded, '_blank' );
+		const query = new URLSearchParams( builtIn && ! roadEdited ? { track: builtIn.id } : { map: encodeCells( getCellsArray() ) } );
+		if ( theme && query.has( 'map' ) ) query.set( 'theme', theme );
+		if ( layoutParam() ) query.set( 'scenery', layoutParam() );
+		window.open( 'index.html?' + query, '_blank' );
 
 	} );
 
@@ -951,6 +1070,623 @@
 		showToast( 'Track cleared' );
 
 	} );
+
+	// ─── Scenery ──────────────────────────────────────────────
+
+	// The track's scenery as the game places it, one model per item so each
+	// can be picked. Models load when this tool first opens, the game's and
+	// the editor's start don't wait for them.
+
+	const TURN = Math.PI / 12; // 15°
+	const STORE = 'racing-editor-scenery:' + ( builtIn ? builtIn.id : 'custom' );
+	const KIT_OF_THEME = { forest: 'forest', stadium: 'racing', village: 'fantasy', suburb: 'suburban', industrial: 'industrial' };
+
+	const sceneryGroup = new THREE.Group();
+	scene.add( sceneryGroup );
+
+	const roots = new Map(); // item → its model
+	const modelCache = new Map();
+	const tints = new Map();
+	const undoStack = [], redoStack = [];
+
+	let theme = params.get( 'theme' ) || ( builtIn ? builtIn.theme : '' ) || '';
+	let items = null; // the layout; null until the tool first opens
+	let edited = params.has( 'scenery' ) || Boolean( builtIn && builtIn.scenery );
+	let shape = null, samples = [];
+	let selected = null;
+	let placing = null; // { id, turn, root, item }
+	let drag = null; // { item, dx, dz, x, z, before, moved }
+
+	const marker = new THREE.Mesh( new THREE.PlaneGeometry( 1, 1 ).rotateX( - Math.PI / 2 ), new THREE.MeshBasicMaterial( { transparent: true, opacity: 0.45, depthTest: false } ) );
+	marker.renderOrder = 2;
+	marker.visible = false;
+	scene.add( marker );
+
+	const MARKS = { ok: 0x3ddc84, view: 0xff9a2e, road: 0xff3b30 };
+	const statusEl = document.getElementById( 'scenery-status' );
+	const groundAt = ( x, z ) => shape && shape.terrain ? shape.terrain.at( x, z ) : 0;
+
+	// The hill tracks' road and hillside, bent by the game's own code
+	function drawHills() {
+
+		const bent = bendTrack( models, new TrackShape( builtIn, trackLine( builtIn ) ) );
+		trackGroup.add( bent.track );
+		for ( const mesh of [ bent.bridge, bent.arch ] ) if ( mesh ) trackGroup.add( mesh );
+		scene.add( bent.terrain );
+
+	}
+
+	function frameTrack() {
+
+		const b = computeTrackBounds( builtIn.id === 'classic' ? null : builtIn.cells );
+		const a = window.innerWidth / window.innerHeight;
+
+		// In the space the scenery panel leaves, and above the toolbar
+		const panel = window.innerWidth > 700 ? 264 : 0;
+		const room = ( window.innerWidth - panel ) / window.innerHeight;
+		camera.zoom = Math.min( 2, 0.8 * frustum / Math.max( b.halfDepth, b.halfWidth / room ) );
+		const x = b.centerX + panel / window.innerHeight * frustum / camera.zoom;
+		const z = b.centerZ + 40 / window.innerHeight * frustum / camera.zoom;
+		camTarget.set( x, 0, z );
+		camera.position.set( x, 50, z );
+		camera.lookAt( camTarget );
+		camera.updateProjectionMatrix();
+
+	}
+
+	function sceneryTrack() {
+
+		if ( builtIn && ! roadEdited ) return builtIn;
+		return { cells: getCellsArray(), custom: true, theme: theme || undefined };
+
+	}
+
+	function layoutParam() {
+
+		if ( items ) return edited ? encodeLayout( items ) : null;
+		return params.get( 'scenery' );
+
+	}
+
+	async function loadScenery( id ) {
+
+		if ( ! modelCache.has( id ) ) modelCache.set( id, loader.loadAsync( MODEL_URLS[ id ] ).then( ( gltf ) => gltf.scene ) );
+		return modelCache.get( id );
+
+	}
+
+	// The model in its colour variation, if it has one
+	async function tinted( root, item ) {
+
+		const name = colormapOf( item, ( builtIn && builtIn.variations ) || {} );
+		if ( name === SCENERY[ item.id ].kit ) return;
+
+		await colormapLoaded( name );
+
+		root.traverse( ( child ) => {
+
+			if ( ! child.isMesh ) return;
+
+			const key = child.material.uuid + name;
+
+			if ( ! tints.has( key ) ) {
+
+				const material = child.material.clone();
+				const map = getColormap( name ).clone();
+				map.offset.copy( child.material.map.offset );
+				map.repeat.copy( child.material.map.repeat );
+				map.needsUpdate = true;
+				material.map = map;
+				tints.set( key, material );
+
+			}
+
+			child.material = tints.get( key );
+
+		} );
+
+	}
+
+	function placeRoot( root, item ) {
+
+		root.position.set( item.x, ROAD_Y + item.y, item.z );
+		root.rotation.y = item.angle;
+		root.scale.setScalar( item.scale );
+
+	}
+
+	async function addRoot( item ) {
+
+		const model = await loadScenery( item.id );
+		const root = model.clone();
+		await tinted( root, item );
+		root.userData.item = item;
+		placeRoot( root, item );
+		roots.set( item, root );
+		sceneryGroup.add( root );
+
+	}
+
+	async function drawItems() {
+
+		sceneryGroup.clear();
+		roots.clear();
+		await Promise.all( items.map( addRoot ) );
+
+	}
+
+	function readShape() {
+
+		const track = sceneryTrack();
+		shape = new TrackShape( track, track === builtIn ? trackLine( builtIn ) : centerline( track.cells ) );
+		samples = roadSamples( shape.line );
+
+	}
+
+	async function openScenery() {
+
+		try {
+
+			readShape();
+
+		} catch {
+
+			showToast( 'Draw a track first' );
+			return;
+
+		}
+
+		document.getElementById( 'sc-theme-row' ).hidden = Boolean( builtIn && ! roadEdited );
+		document.getElementById( 'sc-theme' ).value = theme;
+		sceneryGroup.visible = true;
+
+		if ( ! items ) {
+
+			await generate( params.get( 'scenery' ) || ( builtIn && builtIn.scenery ) || localStorage.getItem( STORE ) );
+			buildPalette();
+
+		}
+
+		for ( const id of Object.keys( SCENERY ) ) loadScenery( id ).catch( () => {} );
+		refreshPanel();
+
+	}
+
+	function closeScenery() {
+
+		cancelPlacing();
+		select( null );
+
+	}
+
+	// The planner's layout, or a saved one
+	async function generate( saved = null ) {
+
+		const track = sceneryTrack();
+		const plan = planScenery( shape, saved ? { ...track, scenery: saved } : { ...track, scenery: undefined } );
+		items = plan.items.map( ( item ) => ( { ...item, base: item.base || 0 } ) );
+		edited = Boolean( saved );
+		await drawItems();
+
+	}
+
+	function persist() {
+
+		edited = true;
+		const encoded = encodeLayout( items );
+
+		try {
+
+			localStorage.setItem( STORE, encoded );
+
+		} catch {}
+
+		const url = new URL( window.location );
+		url.searchParams.set( 'scenery', encoded );
+		history.replaceState( null, '', url );
+
+	}
+
+	const snapshot = () => items.map( ( item ) => ( { ...item } ) );
+
+	// Before each change, so Ctrl+Z goes back to here
+	function remember( state = snapshot() ) {
+
+		undoStack.push( state );
+		if ( undoStack.length > 60 ) undoStack.shift();
+		redoStack.length = 0;
+
+	}
+
+	async function restore( from, to ) {
+
+		if ( ! from.length ) return;
+		to.push( snapshot() );
+		items = from.pop();
+		select( null );
+		await drawItems();
+		persist();
+		refreshPanel();
+
+	}
+
+	function statusOf( item ) {
+
+		if ( roadGap( shape.line, footprint( item ), CLEARANCE + 0.01 ) < CLEARANCE ) return 'road';
+		return hidesRoad( samples, item ) ? 'view' : 'ok';
+
+	}
+
+	const MESSAGES = {
+		road: 'On the road or over a wall: it can\'t go here',
+		view: 'This hides the road from the camera',
+		ok: '',
+	};
+
+	function showMark( item ) {
+
+		if ( ! item ) {
+
+			marker.visible = false;
+			statusEl.textContent = '';
+			return;
+
+		}
+
+		const info = SCENERY[ item.id ];
+		const status = statusOf( item );
+		marker.visible = true;
+		marker.material.color.setHex( MARKS[ status ] );
+		marker.position.set( item.x, ROAD_Y + item.y + 0.05, item.z );
+		marker.rotation.y = item.angle;
+		marker.scale.set( info.w * item.scale + 0.3, 1, info.d * item.scale + 0.3 );
+		statusEl.textContent = MESSAGES[ status ] || item.id.split( '/' )[ 1 ];
+		return status;
+
+	}
+
+	function select( item ) {
+
+		selected = item;
+		showMark( item );
+		refreshPanel();
+
+	}
+
+	function refreshPanel() {
+
+		document.getElementById( 'sc-delete' ).disabled = ! selected;
+		document.getElementById( 'sc-left' ).disabled = document.getElementById( 'sc-right' ).disabled = ! selected && ! placing;
+		document.getElementById( 'sc-undo' ).disabled = ! undoStack.length;
+		document.getElementById( 'sc-redo' ).disabled = ! redoStack.length;
+		document.getElementById( 'sc-reset' ).disabled = ! edited;
+
+		for ( const button of document.querySelectorAll( '#palette button' ) ) button.classList.toggle( 'active', Boolean( placing ) && button.dataset.id === placing.id );
+
+	}
+
+	function buildPalette() {
+
+		const palette = document.getElementById( 'palette' );
+		palette.replaceChildren();
+
+		const first = KIT_OF_THEME[ theme ];
+		const kits = [ ...new Set( [ first, ...Object.values( KIT_OF_THEME ) ] ) ].filter( Boolean );
+
+		for ( const kit of kits ) {
+
+			const title = document.createElement( 'h3' );
+			title.textContent = kit;
+			palette.appendChild( title );
+
+			const ids = Object.keys( CATALOG ).filter( ( id ) => SCENERY[ id ].kit === kit ).sort( ( a, b ) => CATALOG[ a ].role.localeCompare( CATALOG[ b ].role ) || a.localeCompare( b ) );
+
+			for ( const id of ids ) {
+
+				const button = document.createElement( 'button' );
+				button.dataset.id = id;
+				button.textContent = id.split( '/' )[ 1 ].replace( /-/g, ' ' ).replace( /([a-z])([A-Z])/g, '$1 $2' );
+				button.title = CATALOG[ id ].role;
+				button.addEventListener( 'click', () => startPlacing( id ) );
+				palette.appendChild( button );
+
+			}
+
+		}
+
+	}
+
+	async function startPlacing( id ) {
+
+		cancelPlacing();
+		select( null );
+
+		const item = { id, variation: null, x: camTarget.x, z: camTarget.z, y: 0, base: 0, angle: 0, scale: scaleOf( id ) };
+		const placed = { id, item, root: null };
+		placing = placed;
+		refreshPanel();
+
+		const root = ( await loadScenery( id ) ).clone();
+		if ( placing !== placed ) return;
+
+		placed.root = root;
+		root.visible = false;
+		scene.add( root );
+
+	}
+
+	function cancelPlacing() {
+
+		if ( placing && placing.root ) scene.remove( placing.root );
+		placing = null;
+		showMark( null );
+		refreshPanel();
+
+	}
+
+	function worldAt( clientX, clientY ) {
+
+		mouse.x = ( clientX / window.innerWidth ) * 2 - 1;
+		mouse.y = - ( clientY / window.innerHeight ) * 2 + 1;
+		raycaster.setFromCamera( mouse, camera );
+		const hit = new THREE.Vector3();
+		return raycaster.ray.intersectPlane( new THREE.Plane( new THREE.Vector3( 0, 1, 0 ), 0 ), hit );
+
+	}
+
+	function pickItem( clientX, clientY ) {
+
+		mouse.x = ( clientX / window.innerWidth ) * 2 - 1;
+		mouse.y = - ( clientY / window.innerHeight ) * 2 + 1;
+		raycaster.setFromCamera( mouse, camera );
+
+		for ( const hit of raycaster.intersectObjects( sceneryGroup.children, true ) ) {
+
+			let object = hit.object;
+			while ( object && ! object.userData.item ) object = object.parent;
+			if ( object ) return object.userData.item;
+
+		}
+
+		return null;
+
+	}
+
+	// The ghost follows the pointer, its front to the road (in steps of 15°)
+	function moveGhost( clientX, clientY ) {
+
+		if ( ! placing || ! placing.root ) return null;
+
+		const point = worldAt( clientX, clientY );
+		if ( ! point ) return null;
+
+		const { item, root } = placing;
+		const proj = shape.line.project( point.x, point.z );
+		const road = shape.line.pointAt( proj.s );
+		const front = Math.atan2( road[ 0 ] - point.x, road[ 1 ] - point.z );
+		item.x = point.x;
+		item.z = point.z;
+		item.y = groundAt( point.x, point.z );
+		item.angle = Math.round( front / TURN ) * TURN + ( placing.turn || 0 );
+		placeRoot( root, item );
+		root.visible = true;
+		return showMark( item );
+
+	}
+
+	function sceneryDown( clientX, clientY ) {
+
+		if ( ! items ) return;
+
+		if ( placing ) {
+
+			const status = moveGhost( clientX, clientY );
+
+			if ( status === 'road' ) {
+
+				showToast( 'It can\'t go on the road' );
+
+			} else if ( status ) {
+
+				remember();
+				const item = { ...placing.item };
+				items.push( item );
+				addRoot( item );
+				persist();
+				refreshPanel();
+
+			}
+
+			return;
+
+		}
+
+		const item = pickItem( clientX, clientY );
+		select( item );
+		if ( ! item ) return;
+
+		const point = worldAt( clientX, clientY );
+		drag = { item, dx: item.x - point.x, dz: item.z - point.z, x: item.x, z: item.z, before: snapshot(), moved: false };
+
+	}
+
+	function sceneryMove( clientX, clientY ) {
+
+		if ( placing ) {
+
+			moveGhost( clientX, clientY );
+			return;
+
+		}
+
+		if ( ! drag ) return;
+
+		const point = worldAt( clientX, clientY );
+		if ( ! point ) return;
+
+		const { item } = drag;
+		item.x = point.x + drag.dx;
+		item.z = point.z + drag.dz;
+		item.y = groundAt( item.x, item.z ) + item.base;
+		drag.moved = true;
+		placeRoot( roots.get( item ), item );
+		showMark( item );
+
+	}
+
+	function sceneryUp() {
+
+		if ( ! drag ) return;
+
+		const { item, moved, x, z, before } = drag;
+		drag = null;
+		if ( ! moved ) return;
+
+		// Back where it was if it was dropped on the road
+		if ( statusOf( item ) === 'road' ) {
+
+			item.x = x;
+			item.z = z;
+			item.y = groundAt( x, z ) + item.base;
+			placeRoot( roots.get( item ), item );
+			showToast( 'It can\'t go on the road' );
+
+		} else {
+
+			remember( before );
+			persist();
+
+		}
+
+		showMark( item );
+		refreshPanel();
+
+	}
+
+	function turnItem( amount ) {
+
+		if ( placing ) {
+
+			placing.turn = ( placing.turn || 0 ) + amount;
+			placing.item.angle += amount;
+			if ( placing.root ) placeRoot( placing.root, placing.item );
+			showMark( placing.item );
+			return;
+
+		}
+
+		if ( ! selected ) return;
+
+		remember();
+		selected.angle += amount;
+		placeRoot( roots.get( selected ), selected );
+		persist();
+		showMark( selected );
+		refreshPanel();
+
+	}
+
+	function removeItem() {
+
+		if ( ! selected ) return;
+
+		remember();
+		sceneryGroup.remove( roots.get( selected ) );
+		roots.delete( selected );
+		items.splice( items.indexOf( selected ), 1 );
+		persist();
+		select( null );
+
+	}
+
+	function sceneryKey( e ) {
+
+		const key = e.key.toLowerCase();
+		const amount = e.shiftKey ? Math.PI / 2 : TURN;
+
+		if ( key === 'q' ) turnItem( amount );
+		else if ( key === 'e' ) turnItem( - amount );
+		else if ( e.key === 'Delete' || e.key === 'Backspace' ) removeItem();
+		else if ( e.key === 'Escape' ) {
+
+			cancelPlacing();
+			select( null );
+
+		} else if ( key === 'z' && ( e.ctrlKey || e.metaKey ) ) {
+
+			e.preventDefault();
+			if ( e.shiftKey ) restore( redoStack, undoStack );
+			else restore( undoStack, redoStack );
+
+		}
+
+	}
+
+	document.getElementById( 'sc-left' ).addEventListener( 'click', () => turnItem( TURN ) );
+	document.getElementById( 'sc-right' ).addEventListener( 'click', () => turnItem( - TURN ) );
+	document.getElementById( 'sc-delete' ).addEventListener( 'click', removeItem );
+	document.getElementById( 'sc-undo' ).addEventListener( 'click', () => restore( undoStack, redoStack ) );
+	document.getElementById( 'sc-redo' ).addEventListener( 'click', () => restore( redoStack, undoStack ) );
+
+	document.getElementById( 'sc-reset' ).addEventListener( 'click', async () => {
+
+		if ( ! confirm( 'Back to the generated scenery?' ) ) return;
+
+		remember();
+		select( null );
+		await generate();
+		localStorage.removeItem( STORE );
+		const url = new URL( window.location );
+		url.searchParams.delete( 'scenery' );
+		history.replaceState( null, '', url );
+		refreshPanel();
+
+	} );
+
+	document.getElementById( 'sc-copy' ).addEventListener( 'click', async () => {
+
+		const name = builtIn ? builtIn.id : 'custom';
+		const text = JSON.stringify( { scenery: encodeLayout( items || [] ) } );
+
+		try {
+
+			await navigator.clipboard.writeText( text );
+			showToast( `Copied: save it as js/layouts/${ name }.json` );
+
+		} catch {
+
+			window.prompt( `Save this as js/layouts/${ name }.json`, text );
+
+		}
+
+	} );
+
+	document.getElementById( 'sc-theme' ).addEventListener( 'change', async ( e ) => {
+
+		theme = e.target.value;
+		remember();
+		select( null );
+		await generate();
+		buildPalette();
+		refreshPanel();
+
+	} );
+
+	// Playtest hooks (scripts/playtest 'editor-scenery')
+	if ( params.has( 'playtest' ) ) {
+
+		window.__editor = {
+			items: () => items,
+			placing: () => Boolean( placing && placing.root ),
+			screen( x, z ) {
+
+				const p = new THREE.Vector3( x, 0, z ).project( camera );
+				return [ ( p.x + 1 ) / 2 * window.innerWidth, ( 1 - p.y ) / 2 * window.innerHeight ];
+
+			},
+		};
+
+	}
 
 	// ─── Input (pointer events) ───────────────────────────────
 
@@ -1057,6 +1793,13 @@
 
 		}
 
+		if ( tool === 'scenery' ) {
+
+			if ( e.button === 0 ) sceneryDown( e.clientX, e.clientY );
+			return;
+
+		}
+
 		if ( e.button === 0 ) {
 
 			if ( tool === 'erase' ) {
@@ -1121,6 +1864,13 @@
 
 		}
 
+		if ( tool === 'scenery' ) {
+
+			sceneryMove( e.clientX, e.clientY );
+			return;
+
+		}
+
 		if ( isDrawing || isErasing ) {
 
 			handleDraw( e.clientX, e.clientY );
@@ -1140,6 +1890,8 @@
 	} );
 
 	window.addEventListener( 'pointerup', ( e ) => {
+
+		if ( tool === 'scenery' ) sceneryUp();
 
 		pointers.delete( e.pointerId );
 
@@ -1218,6 +1970,14 @@
 
 			selectTool( 'pan' );
 
+		} else if ( e.key === '4' ) {
+
+			selectTool( 'scenery' );
+
+		} else if ( tool === 'scenery' ) {
+
+			sceneryKey( e );
+
 		}
 
 	} );
@@ -1239,9 +1999,20 @@
 	loadSaved();
 
 	// Start with a finish cell if the grid is empty
-	if ( grid.size === 0 ) {
+	if ( grid.size === 0 && ! roadLocked ) {
 
 		placeFinish();
+
+	}
+
+	if ( builtIn ) frameTrack();
+
+	if ( roadLocked ) {
+
+		btnRoad.disabled = true;
+		btnErase.disabled = true;
+		document.getElementById( 'btn-clear' ).disabled = true;
+		selectTool( 'scenery' );
 
 	}
 

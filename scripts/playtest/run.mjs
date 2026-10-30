@@ -5,6 +5,7 @@
 //   npm run playtest -- --scenario desktop-keyboard,pause-resume --laps 2
 //   npm run playtest -- --no-record --url https://kerb-stomp.example.workers.dev/
 //   npm run playtest -- --scenario race --race-tracks classic,monza --race-skills average --npcs 4
+//   npm run playtest -- --scenario scenery,flyover --tier high   (a forced quality tier)
 //
 // Recordings and reports go to playtests/ (gitignored).
 
@@ -57,6 +58,7 @@ const env = {
 	raceSkills: arg( 'race-skills', 'novice,average,expert' ).split( ',' ),
 	npcs: Number( arg( 'npcs', 4 ) ),
 	seed: Number( arg( 'seed', 1 ) ),
+	tier: arg( 'tier', null ),
 	record: ! args.includes( '--no-record' ),
 	videoDir: join( recordDir, '.raw' ),
 	saveVideo( page, label ) {
@@ -80,9 +82,9 @@ const env = {
 	},
 };
 
-console.log( `Playtest ${ stamp } against ${ env.url }${ env.record ? ' (recording)' : '' }\n` );
+console.log( `Playtest ${ stamp } against ${ env.url }${ env.record ? ' (recording)' : '' }${ env.tier ? ' at ' + env.tier : '' }\n` );
 
-const report = { stamp, url: env.url, laps: env.laps, seed: env.seed, scenarios: {} };
+const report = { stamp, url: env.url, laps: env.laps, seed: env.seed, tier: env.tier, scenarios: {} };
 
 try {
 

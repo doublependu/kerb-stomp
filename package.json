@@ -16,6 +16,7 @@
     "thumbs": "node scripts/car-thumbs.mjs",
     "bench": "node scripts/bench.mjs",
     "tracks": "node scripts/check-tracks.mjs",
+    "catalog": "node scripts/catalog.mjs",
     "sim": "node scripts/sim/race.mjs"
   },
   "dependencies": {

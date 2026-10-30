@@ -5,7 +5,7 @@ import { registerAll } from 'crashcat';
 import { MAX_SPEED } from './Vehicle.js';
 import { Camera } from './Camera.js';
 import { Controls } from './Controls.js';
-import { buildTrack, computeTrackBounds, encodeCells } from './Track.js';
+import { buildTrack, computeTrackBounds } from './Track.js';
 import { resolveTrack, rememberTrack, trackLine } from './Tracks.js';
 import { TrackShape } from './TrackShape.js';
 import { bendTrack } from './Bend.js';
@@ -325,7 +325,7 @@ async function init() {
 	const chunk = PLAYTEST && params.has( 'chunk' ) ? { chunk: Number( params.get( 'chunk' ) ) } : {};
 	const bent = shape.hilly ? bendTrack( models, shape ) : null;
 	performance.mark( 'kerb:bend' );
-	const trackGroups = buildTrack( scene, models, classic ? null : track.cells, { ...chunk, shape, bent, reserved: scenery.cells } );
+	const trackGroups = buildTrack( scene, models, classic ? null : track.cells, { ...chunk, shape, bent, reserved: scenery.cells, tents: classic || ! track.theme } );
 
 	for ( const mesh of [ sceneryPads( scenery, pieceMaterial ), boardMesh( scenery, pieceMaterial ) ] ) if ( mesh ) scene.add( mesh );
 	const horizon = horizonMesh( pieceMaterial, [ 0.031, 0.875 ], bounds.centerX, bounds.centerZ ); // the tiles' grass
@@ -1096,6 +1096,7 @@ async function init() {
 			occluders,
 			podium,
 			surface: SURFACE,
+			plan: scenery,
 			cells: track.cells,
 			line: { points: line.points, closed: line.closed },
 			spawn: race.spawn,
@@ -1262,8 +1263,11 @@ async function init() {
 
 	// The setup screen
 
-	// The editor has no hills or crossings: "Create new track" there instead
-	shell.buildPickers( track, track.heights ? null : encodeCells( track.cells ) );
+	// Back to the editor as this track stands
+	const editorQuery = new URLSearchParams( track.custom ? { map: track.id } : { track: track.id } );
+	if ( track.theme && track.custom ) editorQuery.set( 'theme', track.theme );
+	if ( params.get( 'scenery' ) ) editorQuery.set( 'scenery', params.get( 'scenery' ) );
+	shell.buildPickers( track, editorQuery.toString() );
 	shell.setCar( settings.car );
 	shell.setNpcs( settings.npcs, track.raceable );
 	shell.setTouch( settings.touch );

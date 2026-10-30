@@ -8,6 +8,7 @@ import { KeyboardDriver, TouchDriver, PadsDriver, drive } from './driver.mjs';
 import { TRACKS as BUILT_IN } from '../../js/Tracks.js';
 import { computeTrackBounds } from '../../js/Track.js';
 import { CELL } from '../../js/TrackPath.js';
+import { readPNG } from '../png.mjs';
 
 const DESKTOP = { viewport: { width: 1920, height: 1080 } };
 const LAPTOP = { viewport: { width: 1366, height: 768 } };
@@ -69,7 +70,9 @@ async function open( env, contextOptions, { query = '', video = env.record, labe
 
 	} );
 
-	await page.goto( env.url + '?playtest' + query );
+	// --tier forces a quality tier, unless the scenario picks its own
+	const tier = env.tier && ! query.includes( 'quality=' ) ? '&quality=' + env.tier : '';
+	await page.goto( env.url + '?playtest' + query + tier );
 	await page.waitForFunction( () => document.body.dataset.state === 'ready' || document.body.dataset.state === 'error', null, { timeout: 30000 } );
 
 	const close = async () => {
@@ -121,6 +124,25 @@ async function driveRuns( env, name, contextOptions, { input, skills, laps, quer
 	}
 
 	return { checks, runs };
+
+}
+
+// How much a screenshot's colours vary (the mean distance of a sparse grid of
+// pixels from their average): a blank frame of one colour gives 0
+function frameSpread( png ) {
+
+	const { width, height, pixels } = readPNG( png );
+	const samples = [];
+
+	for ( let y = 4; y < height; y += 16 ) for ( let x = 4; x < width; x += 16 ) {
+
+		const o = ( y * width + x ) * 4;
+		samples.push( [ pixels[ o ], pixels[ o + 1 ], pixels[ o + 2 ] ] );
+
+	}
+
+	const mean = [ 0, 1, 2 ].map( ( k ) => samples.reduce( ( a, s ) => a + s[ k ], 0 ) / samples.length );
+	return samples.reduce( ( a, s ) => a + Math.hypot( s[ 0 ] - mean[ 0 ], s[ 1 ] - mean[ 1 ], s[ 2 ] - mean[ 2 ] ), 0 ) / samples.length;
 
 }
 
@@ -360,11 +382,211 @@ export const SCENARIOS = {
 
 			}
 
+			// The chase camera's own view, along the lap: nothing hides the road
+			const points = await page.evaluate( () => window.__kerb.line.points );
+
+			for ( let k = 0; k < 8; k ++ ) {
+
+				const q = points[ Math.floor( k / 8 * points.length ) ];
+				env.saveImage( `scenery-${ track.id }-chase-${ k + 1 }`, await page.evaluate( ( [ p, l ] ) => window.__kerb.view( p, l, 32 ), [ [ q[ 0 ] + 9.27, 9.18, q[ 1 ] + 9.27 ], [ q[ 0 ], 0, q[ 1 ] ] ] ) );
+
+			}
+
 			check( checks, `scenery ${ track.id }: ${ turns.length } turns shot, no page errors`, errors.length === 0, errors.slice( 0, 2 ).join( ' | ' ) );
 			await close();
 
 		}
 
+		return { checks, runs: [] };
+
+	},
+
+	// Every built-in track drawn at each quality tier, from the setup view and
+	// a second into a race: no blank or single-colour frame, and no mesh with
+	// a zero-length or non-finite normal (the lit tiers normalise those into
+	// NaN pixels, and the high tier's bloom spreads them over the frame)
+	'tiers': async ( env ) => {
+
+		const checks = [];
+
+		for ( const track of BUILT_IN ) {
+
+			for ( const tier of [ 'low', 'medium', 'high' ] ) {
+
+				const label = `tiers-${ track.id }-${ tier }`;
+				const { page, errors, close } = await open( env, LAPTOP, { query: `&track=${ track.id }&noflyover&quality=${ tier }`, label, video: false } );
+				await page.waitForFunction( () => window.__kerb.sceneryLoaded(), null, { timeout: 30000 } );
+				await page.waitForTimeout( 500 );
+
+				for ( const moment of [ 'setup', 'race' ] ) {
+
+					// W dismisses the start screen and drives
+					if ( moment === 'race' ) {
+
+						await page.keyboard.down( 'KeyW' );
+						await page.waitForTimeout( 2500 );
+
+					}
+
+					const png = await page.screenshot();
+					env.saveImage( `${ label }-${ moment }`, 'data:image/png;base64,' + png.toString( 'base64' ) );
+					const spread = frameSpread( png );
+					check( checks, `${ label }: ${ moment } frame isn't blank`, spread > 12, `colour spread ${ spread.toFixed( 1 ) }` );
+
+				}
+
+				await page.keyboard.up( 'KeyW' );
+
+				const normals = await page.evaluate( () => {
+
+					const bad = [];
+
+					window.__kerb.three.scene.traverse( ( o ) => {
+
+						const normal = o.isMesh && o.geometry && o.geometry.getAttribute( 'normal' );
+						if ( ! normal ) return;
+						let n = 0;
+
+						for ( let i = 0; i < normal.count; i ++ ) {
+
+							const l = Math.hypot( normal.getX( i ), normal.getY( i ), normal.getZ( i ) );
+							if ( ! ( l > 0.5 ) ) n ++;
+
+						}
+
+						if ( n ) bad.push( `${ o.name || o.parent && o.parent.name || 'mesh' } ${ n }/${ normal.count }` );
+
+					} );
+
+					return bad;
+
+				} );
+
+				check( checks, `${ label }: no zero or NaN normals`, normals.length === 0, normals.slice( 0, 3 ).join( ', ' ) );
+				check( checks, `${ label }: no page errors`, errors.length === 0, errors.slice( 0, 2 ).join( ' | ' ) );
+				await close();
+
+			}
+
+		}
+
+		return { checks, runs: [] };
+
+	},
+
+	// The Scenery tool, through real input: on Indianapolis take a stand away,
+	// place a tree, turn it 90° and drag it; Play carries that into the game as
+	// the same track; reloading the editor's link brings the edit back. On
+	// Suzuka the road is locked and the hill's scenery still opens.
+	'editor-scenery': async ( env ) => {
+
+		const checks = [];
+		const context = await env.browser.newContext( LAPTOP );
+		const page = await context.newPage();
+		const errors = [];
+		page.on( 'pageerror', ( e ) => errors.push( e.message ) );
+		page.on( 'console', ( m ) => {
+
+			if ( m.type() === 'error' ) errors.push( m.text() );
+
+		} );
+
+		const items = () => page.evaluate( () => window.__editor.items().map( ( { id, x, z, angle } ) => ( { id, x, z, angle } ) ) );
+		const screen = ( x, z ) => page.evaluate( ( [ a, b ] ) => window.__editor.screen( a, b ), [ x, z ] );
+
+		await page.goto( env.url + 'editor.html?playtest&track=indianapolis' );
+		await page.waitForFunction( () => window.__editor, null, { timeout: 30000 } );
+		await page.keyboard.press( '4' );
+		await page.waitForFunction( () => window.__editor.items() && window.__editor.items().length > 0, null, { timeout: 30000 } );
+		await page.waitForTimeout( 500 );
+
+		const before = await items();
+		const stand = before.find( ( i ) => i.id === 'racing/grandStandAwning' );
+
+		// Select the stand and remove it
+		await page.mouse.click( ...await screen( stand.x, stand.z ) );
+		await page.keyboard.press( 'Delete' );
+		const removed = await items();
+		check( checks, 'editor: Delete removes the selected stand', removed.length === before.length - 1 && ! removed.some( ( i ) => i.x === stand.x && i.z === stand.z ) );
+
+		// Ctrl+Z brings it back, Ctrl+Shift+Z takes it away again
+		await page.keyboard.press( 'Control+z' );
+		await page.waitForTimeout( 200 );
+		check( checks, 'editor: Ctrl+Z restores it', ( await items() ).length === before.length );
+		await page.keyboard.press( 'Control+Shift+z' );
+		await page.waitForTimeout( 200 );
+		check( checks, 'editor: Ctrl+Shift+Z removes it again', ( await items() ).length === before.length - 1 );
+
+		// Place a tree in the middle of the infield: on the road it's refused
+		const lane = await page.evaluate( () => window.__editor.items().find( ( i ) => i.id === 'racing/control-tower' ) );
+		const spot = { x: lane.x - 8, z: lane.z + 10 };
+		await page.locator( '#palette button[data-id="racing/treeLarge"]' ).click();
+		await page.waitForFunction( () => window.__editor.placing(), null, { timeout: 15000 } );
+		const count = ( await items() ).length;
+		await page.mouse.move( ...await screen( spot.x, spot.z ) );
+		await page.mouse.click( ...await screen( spot.x, spot.z ) );
+		await page.keyboard.press( 'Escape' );
+		await page.waitForTimeout( 200 );
+		const placed = await items();
+		const tree = placed[ placed.length - 1 ];
+		check( checks, 'editor: a tree goes down where it was clicked', placed.length === count + 1 && tree.id === 'racing/treeLarge' && Math.hypot( tree.x - spot.x, tree.z - spot.z ) < 0.3, `${ tree.id } at ${ tree.x.toFixed( 1 ) }, ${ tree.z.toFixed( 1 ) }` );
+
+		// Select it, turn it 90° with Shift+Q, and drag it 2 m
+		await page.mouse.click( ...await screen( tree.x, tree.z ) );
+		await page.keyboard.press( 'Shift+Q' );
+		const turned = ( await items() ).at( - 1 );
+		check( checks, 'editor: Shift+Q turns it 90°', Math.abs( turned.angle - tree.angle - Math.PI / 2 ) < 1e-6, `${ ( ( turned.angle - tree.angle ) * 180 / Math.PI ).toFixed( 1 ) }°` );
+
+		await page.mouse.move( ...await screen( tree.x, tree.z ) );
+		await page.mouse.down();
+		await page.mouse.move( ...await screen( tree.x, tree.z + 2 ), { steps: 4 } );
+		await page.mouse.up();
+		const moved = ( await items() ).at( - 1 );
+		check( checks, 'editor: dragging moves it', Math.abs( moved.z - tree.z - 2 ) < 0.3, `${ ( moved.z - tree.z ).toFixed( 2 ) } m` );
+
+		// Dropped on the road, it goes back
+		const road = await page.evaluate( () => window.__editor.items().find( ( i ) => i.id === 'racing/pitsOffice' ) );
+		await page.mouse.move( ...await screen( moved.x, moved.z ) );
+		await page.mouse.down();
+		await page.mouse.move( ...await screen( road.x + 8, road.z ), { steps: 4 } );
+		await page.mouse.up();
+		const back = ( await items() ).at( - 1 );
+		check( checks, 'editor: dropped on the road, it goes back', Math.hypot( back.x - moved.x, back.z - moved.z ) < 1e-6 );
+
+		// Play: the same track, with this scenery
+		const [ game ] = await Promise.all( [ context.waitForEvent( 'page' ), page.locator( '#btn-play' ).click() ] );
+		await presetStorage( context, settings() );
+		await game.waitForLoadState();
+		await game.evaluate( () => {
+
+			localStorage.setItem( 'kerb.car', 'vehicle-truck-yellow' );
+
+		} );
+		await game.goto( game.url() + '&playtest&noflyover' );
+		await game.waitForFunction( () => window.__kerb && window.__kerb.sceneryLoaded(), null, { timeout: 30000 } );
+
+		const inGame = await game.evaluate( () => ( { track: window.__kerb.state().track, url: location.search, items: window.__kerb.plan.items.map( ( { id, x, z, angle } ) => ( { id, x, z, angle } ) ) } ) );
+		const found = inGame.items.at( - 1 );
+		check( checks, 'game: plays as the built-in track', inGame.track === 'indianapolis', inGame.track );
+		check( checks, 'game: the stand is gone', inGame.items.filter( ( i ) => i.id === stand.id ).length === before.filter( ( i ) => i.id === stand.id ).length - 1 );
+		check( checks, 'game: the tree stands where it was left, at its angle', found.id === 'racing/treeLarge' && Math.hypot( found.x - moved.x, found.z - moved.z ) < 0.11 && Math.abs( found.angle - ( ( moved.angle % ( Math.PI * 2 ) ) + Math.PI * 2 ) % ( Math.PI * 2 ) ) < 0.03, `${ found.id } at ${ found.x }, ${ found.z }` );
+		await game.close();
+
+		// The editor's link brings it all back
+		await page.reload();
+		await page.waitForFunction( () => window.__editor, null, { timeout: 30000 } );
+		await page.keyboard.press( '4' );
+		await page.waitForFunction( () => window.__editor.items() && window.__editor.items().length > 0, null, { timeout: 30000 } );
+		const again = await items();
+		check( checks, 'editor: a reload restores the edit', again.length === placed.length && again.at( - 1 ).id === 'racing/treeLarge', `${ again.length } items` );
+
+		// The hill tracks open on the scenery, road locked
+		await page.goto( env.url + 'editor.html?playtest&track=suzuka' );
+		await page.waitForFunction( () => window.__editor && window.__editor.items() && window.__editor.items().length > 0, null, { timeout: 30000 } );
+		check( checks, 'editor: Suzuka opens with its road locked', await page.locator( '#btn-road' ).isDisabled() );
+
+		check( checks, 'editor-scenery: no page errors', errors.length === 0, errors.slice( 0, 2 ).join( ' | ' ) );
+		await context.close();
 		return { checks, runs: [] };
 
 	},

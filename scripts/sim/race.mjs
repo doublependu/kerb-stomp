@@ -9,8 +9,11 @@
 //   npm run sim -- --ace                       the best NPC: alone, in the first race's field, and a wall-riding probe
 //   npm run sim -- --steer --gain 2,3          steering gains for the best NPC (AIDriver.STEER), over a grid
 //   npm run sim -- --optimize --tracks monza   the fastest racing line per track (writes js/RaceLines.js)
+//   npm run sim -- --ride                      how smooth the ride is: bounce and wiggle, on flat road and slopes
 
+import * as THREE from 'three';
 import { STEP } from '../../js/Race.js';
+import { GROUND_Y } from '../../js/TrackShape.js';
 import { AIDriver, STEER, rng } from '../../js/AIDriver.js';
 import { TRACKS } from '../../js/Tracks.js';
 import { CARS } from '../../js/CarList.js';
@@ -113,6 +116,144 @@ class WallRider extends AIDriver {
 
 // The yardstick for the best NPC (plan_3 phase 1): alone, in the first
 // race's field, where its slow laps lose time, and the wall-rider probe
+// The ride, for the best NPC on analog steering and for the same NPC through
+// keyboard-style steering (full lock or nothing, as a player taps): the
+// sphere's height above the road (s from where the car is now, not where it
+// was a step ago), hops off the road, and the heading's and the body's noise
+// on flat road and on slopes
+if ( args.includes( '--ride' ) ) {
+
+	const percentile = ( values, p ) => values.slice().sort( ( a, b ) => a - b )[ Math.floor( values.length * p ) ] ?? 0;
+	const rms = ( values ) => Math.sqrt( mean( values.map( ( v ) => v * v ) ) );
+
+	class Tapper {
+
+		constructor( driver ) {
+
+			this.driver = driver;
+			this.input = { x: 0, z: 0, mode: 'car' };
+			this.held = 0;
+
+		}
+
+		drive( car, cars, dt, time ) {
+
+			const { x, z } = this.driver.drive( car, cars, dt, time );
+			this.held = Math.abs( x ) > ( this.held ? 0.15 : 0.35 ) ? Math.sign( x ) : 0;
+			this.input.x = this.held;
+			this.input.z = z;
+			return this.input;
+
+		}
+
+		reset() {
+
+			this.driver.reset();
+
+		}
+
+		get wantsRespawn() {
+
+			return this.driver.wantsRespawn;
+
+		}
+
+		set racing( racing ) {
+
+			this.driver.racing = racing;
+
+		}
+
+	}
+
+	for ( const track of tracks ) {
+
+		for ( const driving of [ 'analog', 'keys' ] ) {
+
+			const race = makeRace( track );
+			const ai = new AIDriver( race.line, { skill: 1, seed: 3 } );
+			const car = race.addCar( CARS[ 0 ], stubModel(), { driver: driving === 'keys' ? new Tapper( ai ) : ai } );
+			race.setup( 'race', race.cars, 99 );
+
+			const flat = { gap: [], off: [], yaw: [], tilt: [], rock: [], bump: 0, jolt: 0, flips: 0, steps: 0 };
+			const slope = { gap: [], off: [], yaw: [], tilt: [], rock: [], bump: 0, jolt: 0, flips: 0, steps: 0 };
+			const up = new THREE.Vector3(), forward = new THREE.Vector3(), prevUp = new THREE.Vector3();
+			const hops = [];
+			let hop = null, prevY = null, prevRate = 0, prevYaw = null, prevAir = false;
+			const step = race.step.bind( race );
+
+			race.step = ( input ) => {
+
+				step( input );
+				const v = car.vehicle;
+
+				if ( car.carry || car.lapTimes.length < 1 || car.lapTimes.length > 2 ) {
+
+					prevY = null;
+					return;
+
+				}
+
+				const road = race.line.project( v.spherePos.x, v.spherePos.z, car.proj.index );
+				const gap = v.spherePos.y - 0.5 - GROUND_Y - race.line.heightAt( road.s );
+				const k = race.line.slopeAt( road.s );
+				const where = Math.abs( k ) < 0.02 ? flat : slope;
+				up.set( 0, 1, 0 ).applyQuaternion( v.container.quaternion );
+				forward.set( 0, 0, 1 ).applyQuaternion( v.container.quaternion );
+				const yaw = Math.atan2( forward.x, forward.z );
+
+				where.steps ++;
+				where.gap.push( gap );
+				where.tilt.push( up.angleTo( v.groundNormal ) * 180 / Math.PI );
+
+				if ( prevY !== null ) {
+
+					// Along the road's own rise over this step, not its slope × speed
+					where.off.push( Math.abs( ( v.spherePos.y - prevY.y ) - ( gap + race.line.heightAt( road.s ) - prevY.h ) ) / STEP + Math.abs( ( gap - prevY.gap ) / STEP ) );
+					if ( v.sphereVel.y - prevY.vy > 0.5 ) where.bump ++;
+					if ( Math.hypot( v.sphereVel.x - prevY.vx, v.sphereVel.z - prevY.vz ) > 0.3 ) where.jolt ++;
+					where.rock.push( up.angleTo( prevUp ) * 180 / Math.PI / STEP );
+					const rate = Math.atan2( Math.sin( yaw - prevYaw ), Math.cos( yaw - prevYaw ) ) / STEP;
+					where.yaw.push( ( rate - prevRate ) / STEP );
+					prevRate = rate;
+					if ( v.grounded !== prevAir ) where.flips ++;
+
+				}
+
+				prevAir = v.grounded;
+				prevYaw = yaw;
+				prevUp.copy( up );
+				prevY = { y: v.spherePos.y, vx: v.sphereVel.x, vy: v.sphereVel.y, vz: v.sphereVel.z, gap, h: gap + race.line.heightAt( road.s ) };
+
+				if ( gap > 0.1 ) {
+
+					hop ||= { s: road.s, peak: 0 };
+					hop.peak = Math.max( hop.peak, gap );
+
+				} else if ( hop ) {
+
+					hops.push( hop );
+					hop = null;
+
+				}
+
+			};
+
+			run( race, 3, 240 );
+
+			const line = ( name, w ) => w.steps ? `${ name } ${ ( w.steps * STEP ).toFixed( 0 ).padStart( 3 ) } s: height ${ percentile( w.gap, 0.5 ).toFixed( 3 ) } / ${ percentile( w.gap, 0.9 ).toFixed( 3 ) } / ${ percentile( w.gap, 0.99 ).toFixed( 3 ) } m, off the road ${ percentile( w.off, 0.5 ).toFixed( 2 ) } / ${ percentile( w.off, 0.9 ).toFixed( 2 ) } m/s, kicks ${ ( w.bump / ( w.steps * STEP ) ).toFixed( 2 ) }/s, sideways jolts ${ ( w.jolt / ( w.steps * STEP ) ).toFixed( 2 ) }/s, rock ${ rms( w.rock ).toFixed( 1 ) }°/s, tilt ${ rms( w.tilt ).toFixed( 2 ) }°, yaw noise ${ rms( w.yaw ).toFixed( 1 ) } rad/s², grounded flips ${ ( w.flips / ( w.steps * STEP ) ).toFixed( 2 ) }/s` : `${ name } –`;
+
+			const peaks = hops.map( ( h ) => h.peak );
+			console.log( `${ track.id.padEnd( 13 ) } ${ driving.padEnd( 6 ) } laps ${ car.lapTimes.slice( 1, 3 ).map( ( t ) => t.toFixed( 2 ) ).join( ' ' ) }, ${ hops.length } hops over 10 cm${ peaks.length ? ` (highest ${ Math.max( ...peaks ).toFixed( 2 ) } m)` : '' }` );
+			console.log( '  ' + line( 'flat  ', flat ) );
+			console.log( '  ' + line( 'slopes', slope ) );
+
+		}
+
+	}
+
+}
+
 if ( args.includes( '--ace' ) ) {
 
 	const laps = Number( arg( 'laps', 5 ) );

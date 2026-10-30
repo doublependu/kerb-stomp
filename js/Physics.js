@@ -4,6 +4,7 @@ import { TRACK_CELLS, CELL_RAW, ORIENT_DEG, GRID_SCALE } from './Track.js';
 import { GROUND_Y, ROAD_Y, WALL_CENTER } from './TrackShape.js';
 
 const WALL_HALF_THICK = 0.1875;
+const ROAD_FRICTION = 5.0;
 const GRAVEL_FRICTION = 2.0;
 const WALL_HALF_HEIGHT = 1.125;
 
@@ -38,45 +39,14 @@ function upTriangle( positions, indices, a, b, c ) {
 
 }
 
-// Tracks with hills (TrackShape): the road as a triangle-mesh ribbon along
-// the centerline at the profile's height, walls as boxes tilted to the
-// slope (none on the outside of gravel cells: that's the cliff), and the
-// hillside terrain. Returns the bodies a car can drive on.
+// Tracks with hills (TrackShape): walls as boxes tilted to the slope (none
+// on the outside of gravel cells: that's the cliff) and the hillside
+// terrain. Returns the bodies a car can drive on. The road itself is no
+// collider here: see RoadTile.
 export function buildHillColliders( world, shape ) {
 
 	const line = shape.line;
 	const ground = [];
-
-	// Road (gravel apart: less grip, so cars slide)
-	{
-
-		const positions = [], indices = [], gravel = [];
-		const count = Math.ceil( line.length / 0.5 );
-
-		for ( let k = 0; k <= count; k ++ ) {
-
-			const s = k / count * line.length;
-			const p = line.pointAt( s ), dir = line.directionAt( s );
-			const half = shape.roadHalf( s ) + 0.3;
-			const y = GROUND_Y + line.heightAt( s );
-			const lx = - Math.cos( dir ), lz = Math.sin( dir );
-			positions.push( p[ 0 ] + lx * half, y, p[ 1 ] + lz * half, p[ 0 ] - lx * half, y, p[ 1 ] - lz * half );
-
-		}
-
-		for ( let k = 0; k < count; k ++ ) {
-
-			const a = k * 2;
-			const list = shape.isUnsealed( ( k + 0.5 ) / count * line.length ) ? gravel : indices;
-			upTriangle( positions, list, a, a + 1, a + 3 );
-			upTriangle( positions, list, a, a + 3, a + 2 );
-
-		}
-
-		ground.push( staticMesh( world, positions, indices, 5.0 ) );
-		if ( gravel.length ) ground.push( staticMesh( world, positions, gravel, GRAVEL_FRICTION ) );
-
-	}
 
 	// Walls, a box every ~1.9 m along each side of each cell
 	const wallPoint = ( s, side, out ) => {
@@ -162,11 +132,87 @@ export function buildHillColliders( world, shape ) {
 
 		}
 
-		if ( indices.length ) ground.push( staticMesh( world, positions, indices, 5.0 ) );
+		if ( indices.length ) ground.push( staticMesh( world, positions, indices, ROAD_FRICTION ) );
 
 	}
 
 	return ground;
+
+}
+
+// The road under one car on a track with hills: a flat tile laid at the
+// road's exact height and slope under the car every step. A triangle mesh
+// can't carry the car: its sphere catches the edges of the strips ahead,
+// even coplanar ones, and at 20 rad/s of spin that kicks it 2–5 m/s into
+// the air (ai/next_4.md). On a tile it rolls on one clean plane, as on the
+// flat tracks' ground box. Each car rolls only on its own tile
+// (collisionGroups: bit 0 for everything else, then a bit per tile).
+const TILE_HALF = [ 2, 0.1, 2 ];
+const GROUND_TOP = 0.04; // the ground box's real face above GROUND_Y: it's as thick as its convex radius
+const OFF_WORLD = [ 0, - 100, 0 ];
+const _p = [ 0, 0, 0 ];
+const _q4 = [ 0, 0, 0, 1 ];
+const _n = new THREE.Vector3();
+const _Y = new THREE.Vector3( 0, 1, 0 );
+const _normal = [ 0, 1, 0 ];
+
+export class RoadTile {
+
+	constructor( world, shape, sphere, slot ) {
+
+		this.world = world;
+		this.shape = shape;
+		const bit = 2 ** ( slot + 1 );
+
+		this.body = rigidBody.create( world, {
+			shape: box.create( { halfExtents: TILE_HALF } ),
+			motionType: MotionType.STATIC,
+			objectLayer: world._OL_STATIC,
+			position: OFF_WORLD,
+			friction: ROAD_FRICTION,
+			restitution: 0,
+			collisionGroups: bit,
+			collisionMask: bit,
+		} );
+
+		sphere.collisionGroups = bit | 1;
+		sphere.collisionMask = bit | 1;
+
+	}
+
+	// Under the sphere at (x, z), on the pass of the road its projection
+	// follows. Off the road's edge, or fallen below it, there's no tile: the
+	// terrain carries the car
+	place( x, y, z, proj ) {
+
+		const { shape, body } = this;
+		const s = proj.s;
+		const height = GROUND_Y + GROUND_TOP + shape.line.heightAt( s );
+
+		if ( Math.abs( proj.lateral ) > shape.roadHalf( s ) + 0.3 || y - 0.5 < height - 0.3 ) {
+
+			if ( body.position[ 1 ] !== OFF_WORLD[ 1 ] ) rigidBody.setPosition( this.world, body, OFF_WORLD, false );
+			return;
+
+		}
+
+		shape.roadNormal( s, proj.lateral, _normal );
+		_n.fromArray( _normal );
+		_q.setFromUnitVectors( _Y, _n );
+		_q4[ 0 ] = _q.x; _q4[ 1 ] = _q.y; _q4[ 2 ] = _q.z; _q4[ 3 ] = _q.w;
+		_p[ 0 ] = x - _n.x * TILE_HALF[ 1 ];
+		_p[ 1 ] = height - _n.y * TILE_HALF[ 1 ];
+		_p[ 2 ] = z - _n.z * TILE_HALF[ 1 ];
+		body.friction = shape.isUnsealed( s ) ? GRAVEL_FRICTION : ROAD_FRICTION;
+		rigidBody.setTransform( this.world, body, _p, _q4, false );
+
+	}
+
+	remove() {
+
+		rigidBody.remove( this.world, this.body );
+
+	}
 
 }
 

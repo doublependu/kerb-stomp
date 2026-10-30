@@ -16,6 +16,7 @@ const DIRS = { N: [ 0, - 1 ], S: [ 0, 1 ], E: [ 1, 0 ], W: [ - 1, 0 ] };
 const HALF = CELL_RAW / 2;
 const SLICES = 8; // along a bridge deck
 const CUTS = [ 0.28, 0.39, 0.5, 0.61, 0.72 ]; // across a join (TrackPath's FILLET 0.22)
+const EPS = 1e-4; // kit units: on a cutting plane, and the thinnest triangle kept
 
 // Colormap swatches (Starter Kit): grass, rock, the walls' grey
 const GRASS_UV = [ 0.031, 0.875 ];
@@ -64,7 +65,10 @@ function bake( model, filter ) {
 
 }
 
-// Split triangles by the vertical plane nx·x + nz·z = d (positions, uvs)
+// Split triangles by the vertical plane nx·x + nz·z = d (positions, uvs). A
+// vertex within EPS of the plane counts as on it, so no piece comes out as a
+// zero-area sliver: those get zero-length normals, which the lit materials
+// turn into NaN pixels (and bloom spreads them over the whole frame)
 function split( tris, nx, nz, d ) {
 
 	const out = [];
@@ -73,18 +77,30 @@ function split( tris, nx, nz, d ) {
 	for ( const tri of tris ) {
 
 		const dist = tri.map( ( v ) => v[ 0 ] * nx + v[ 2 ] * nz - d );
-		const above = dist.map( ( x ) => x > 1e-6 );
-		const count = above.filter( Boolean ).length;
+		const side = dist.map( ( x ) => x > EPS ? 1 : x < - EPS ? - 1 : 0 );
 
-		if ( count === 0 || count === 3 ) {
+		if ( ! side.includes( 1 ) || ! side.includes( - 1 ) ) {
 
 			out.push( tri );
 			continue;
 
 		}
 
+		// Through a corner: two triangles
+		const on = side.indexOf( 0 );
+
+		if ( on >= 0 ) {
+
+			const a = tri[ on ], b = tri[ ( on + 1 ) % 3 ], c = tri[ ( on + 2 ) % 3 ];
+			const db = dist[ ( on + 1 ) % 3 ], dc = dist[ ( on + 2 ) % 3 ];
+			const p = lerp( b, c, db / ( db - dc ) );
+			out.push( [ a, b, p ], [ a, p, c ] );
+			continue;
+
+		}
+
 		// The vertex alone on its side, then the other two in winding order
-		const lone = above.findIndex( ( a ) => a === ( count === 1 ) );
+		const lone = side.findIndex( ( s, k ) => s !== side[ ( k + 1 ) % 3 ] && s !== side[ ( k + 2 ) % 3 ] );
 		const a = tri[ lone ], b = tri[ ( lone + 1 ) % 3 ], c = tri[ ( lone + 2 ) % 3 ];
 		const da = dist[ lone ], db = dist[ ( lone + 1 ) % 3 ], dc = dist[ ( lone + 2 ) % 3 ];
 		const p = lerp( a, b, da / ( da - db ) ), q = lerp( a, c, da / ( da - dc ) );
@@ -94,6 +110,18 @@ function split( tris, nx, nz, d ) {
 	}
 
 	return out;
+
+}
+
+// A triangle too thin to draw (under EPS high on its longest side): its
+// normal would come out zero or pointing anywhere
+function sliver( a, b, c ) {
+
+	const ux = b[ 0 ] - a[ 0 ], uy = b[ 1 ] - a[ 1 ], uz = b[ 2 ] - a[ 2 ];
+	const vx = c[ 0 ] - a[ 0 ], vy = c[ 1 ] - a[ 1 ], vz = c[ 2 ] - a[ 2 ];
+	const area2 = Math.hypot( uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx );
+	const edge = Math.max( Math.hypot( ux, uy, uz ), Math.hypot( vx, vy, vz ), Math.hypot( c[ 0 ] - b[ 0 ], c[ 1 ] - b[ 1 ], c[ 2 ] - b[ 2 ] ) );
+	return area2 <= EPS * edge;
 
 }
 
@@ -138,7 +166,7 @@ function slicedPiece( model, corner, filter, cuts ) {
 
 	}
 
-	return { tris, material };
+	return { tris: tris.filter( ( t ) => ! sliver( ...t ) ), material };
 
 }
 
@@ -203,9 +231,20 @@ class Builder {
 
 	geometry() {
 
+		// No slivers (see split), judged on the positions as stored
+		const p = new Float32Array( this.positions ), positions = [], uvs = [];
+
+		for ( let i = 0; i < p.length; i += 9 ) {
+
+			if ( sliver( p.subarray( i, i + 3 ), p.subarray( i + 3, i + 6 ), p.subarray( i + 6, i + 9 ) ) ) continue;
+			for ( let k = 0; k < 9; k ++ ) positions.push( p[ i + k ] );
+			for ( let k = 0; k < 6; k ++ ) uvs.push( this.uvs[ i / 3 * 2 + k ] );
+
+		}
+
 		const geometry = new THREE.BufferGeometry();
-		geometry.setAttribute( 'position', new THREE.Float32BufferAttribute( this.positions, 3 ) );
-		geometry.setAttribute( 'uv', new THREE.Float32BufferAttribute( this.uvs, 2 ) );
+		geometry.setAttribute( 'position', new THREE.Float32BufferAttribute( positions, 3 ) );
+		geometry.setAttribute( 'uv', new THREE.Float32BufferAttribute( uvs, 2 ) );
 		geometry.computeVertexNormals(); // non-indexed: flat faces, like the kits
 		return geometry;
 

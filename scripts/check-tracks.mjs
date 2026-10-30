@@ -2,7 +2,8 @@
 // tracks also: the steepest gradient, and each crest's radius and the speed
 // at which a car leaves the ground over it (v² = g · R; top speed ~14.6 m/s).
 // Fails on any scenery footprint closer than Scenery.CLEARANCE to the
-// walls' outer face; warns when a track's optimized racing line was made
+// walls' outer face, on anything that hides the road from the chase camera
+// and on a stand or pit that doesn't face the road; warns when a track's optimized racing line was made
 // for a different layout (rerun `npm run sim -- --optimize --tracks <id>`).
 //
 //   npm run tracks
@@ -10,12 +11,14 @@
 import { TRACKS, trackLine } from '../js/Tracks.js';
 import { checkLayout, CELL } from '../js/TrackPath.js';
 import { TrackShape } from '../js/TrackShape.js';
-import { planScenery, footprint, roadGap, CLEARANCE } from '../js/Scenery.js';
+import { planScenery, footprint, roadGap, hidesRoad, roadSamples, CLEARANCE } from '../js/Scenery.js';
+import { CATALOG } from '../js/SceneryCatalog.js';
 import { RACE_LINES } from '../js/RaceLines.js';
 import { lineHash } from '../js/RacingLine.js';
 
 const GRAVITY = 9.81 * 1.5;
 const MAX_GRADIENT = 0.2;
+const MAX_TURN = 15; // ° a stand's or a pit's front may be off the road
 
 let failed = 0;
 
@@ -102,6 +105,36 @@ for ( const track of TRACKS ) {
 
 	}
 
+	// Nothing hides the road from the chase camera, and whatever has a front
+	// shows it to the road
+	const samples = roadSamples( line );
+	let hidden = 0, turned = 0;
+
+	for ( const item of plan.items ) {
+
+		if ( hidesRoad( samples, item ) ) {
+
+			problems.push( `${ item.id } in cell ${ Math.floor( item.x / CELL ) },${ Math.floor( item.z / CELL ) } hides the road` );
+			hidden ++;
+
+		}
+
+		const role = CATALOG[ item.id ].role;
+		if ( role !== 'stand' && role !== 'pit' ) continue;
+
+		const p = line.pointAt( line.project( item.x, item.z ).s );
+		const off = Math.atan2( p[ 0 ] - item.x, p[ 1 ] - item.z ) - item.angle;
+		const degrees = Math.abs( Math.atan2( Math.sin( off ), Math.cos( off ) ) ) * 180 / Math.PI;
+
+		if ( degrees > MAX_TURN ) {
+
+			problems.push( `${ item.id } in cell ${ Math.floor( item.x / CELL ) },${ Math.floor( item.z / CELL ) } faces ${ degrees.toFixed( 0 ) }° off the road` );
+			turned ++;
+
+		}
+
+	}
+
 	console.log( `  scenery: ${ plan.items.length } items from ${ kits.size } kit${ kits.size === 1 ? '' : 's' } (${ [ ...kits ].join( ', ' ) }), ${ plan.boards.length } boards${ onRoad ? `, ${ onRoad } too close to the road` : '' }` );
 
 	// The optimized racing line, if it's for this layout
@@ -109,7 +142,7 @@ for ( const track of TRACKS ) {
 	if ( ! saved ) console.log( '  racing line: not optimized (NPCs drive the smooth line)' );
 	else if ( saved.hash !== lineHash( track ) ) console.log( `  ⚠ racing line: optimized for a different layout; NPCs drive the smooth line until \`npm run sim -- --optimize --tracks ${ track.id }\`` );
 
-	failed += onRoad;
+	failed += onRoad + hidden + turned;
 
 	for ( const p of problems ) console.log( '  ✗ ' + p );
 

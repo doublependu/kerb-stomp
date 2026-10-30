@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<title>Scenery catalog</title>
+	<style>body { margin: 0; background: #1c2029; }</style>
+</head>
+<body>
+	<!-- Rendered by scripts/catalog.mjs: one contact sheet per kit. Each model
+	     from the chase camera and from its +z side (the "front" of the planner),
+	     with a red arrow on the ground toward +z and a truck for scale, at the
+	     size it stands in the game. Shows the last sheet when opened. -->
+	<script type="module">
+
+		import * as THREE from 'three';
+		import { ColorMapGLTFLoader, getColormap, colormapLoaded } from '../js/Loader.js';
+		import { MODEL_URLS } from '../js/Assets.js';
+		import { SCENERY } from '../js/SceneryList.js';
+		import { CATALOG, heightOf } from '../js/SceneryCatalog.js';
+
+		const TILE = 200, LABEL = 18, COLUMNS = 7;
+		const params = new URLSearchParams( location.search );
+		const kits = [ ...new Set( Object.values( SCENERY ).map( ( s ) => s.kit ) ) ];
+
+		const renderer = new THREE.WebGLRenderer( { antialias: true, preserveDrawingBuffer: true } );
+		renderer.setPixelRatio( 1 );
+		renderer.toneMapping = THREE.ACESFilmicToneMapping;
+		renderer.setClearColor( 0xdfe6e0 );
+		renderer.setScissorTest( true );
+
+		const scene = new THREE.Scene();
+		const sun = new THREE.DirectionalLight( 0xffffff, 3 );
+		sun.position.set( 5, 15, 12 );
+		scene.add( sun );
+		scene.add( new THREE.HemisphereLight( 0xc8d8e8, 0x7a8a5a, 2 ) );
+
+		const arrow = new THREE.Mesh( new THREE.ConeGeometry( 0.35, 1.2, 12 ).rotateX( Math.PI / 2 ), new THREE.MeshBasicMaterial( { color: 0xe02020 } ) );
+		scene.add( arrow );
+
+		const loader = new ColorMapGLTFLoader();
+		await colormapLoaded( 'starter' );
+		await colormapLoaded( 'cars' );
+		const truck = ( await loader.loadAsync( MODEL_URLS[ 'vehicle-truck-yellow' ] ) ).scene;
+		scene.add( truck );
+
+		const views = [ new THREE.Vector3( 9.27, 9.18, 9.27 ).normalize(), new THREE.Vector3( 0, 0.12, 1 ).normalize() ];
+		const camera = new THREE.OrthographicCamera( - 1, 1, 1, - 1, 0.1, 200 );
+		const box = new THREE.Box3(), size = new THREE.Vector3(), center = new THREE.Vector3();
+		const sheets = {};
+
+		for ( const kit of kits ) {
+
+			await colormapLoaded( kit );
+			const ids = Object.keys( SCENERY ).filter( ( id ) => SCENERY[ id ].kit === kit );
+			const rows = Math.ceil( ids.length * 2 / COLUMNS );
+			const width = TILE * COLUMNS, height = ( TILE + LABEL ) * rows;
+			renderer.setSize( width, height );
+			const canvas = document.createElement( 'canvas' );
+			canvas.width = width;
+			canvas.height = height;
+			const ctx = canvas.getContext( '2d' );
+			ctx.fillStyle = '#1c2029';
+			ctx.fillRect( 0, 0, width, height );
+			ctx.font = '12px sans-serif';
+
+			let k = 0;
+
+			for ( const id of ids ) {
+
+				const gltf = await loader.loadAsync( MODEL_URLS[ id ] );
+				const model = gltf.scene;
+				const info = SCENERY[ id ];
+				const metres = heightOf( id );
+				const scale = metres / info.h;
+				model.scale.setScalar( scale );
+				scene.add( model );
+
+				const halfW = info.w * scale / 2, halfD = info.d * scale / 2;
+				arrow.position.set( 0, 0.05, halfD + 0.9 );
+				truck.position.set( halfW + 1.2, 0, 0 );
+				box.setFromObject( model ).expandByObject( truck ).expandByObject( arrow );
+				box.getCenter( center );
+				box.getSize( size );
+				const radius = Math.max( 2.5, size.length() / 2 * 0.95 );
+
+				views.forEach( ( view, v ) => {
+
+					const col = k % COLUMNS, row = Math.floor( k / COLUMNS );
+					const x = col * TILE, y = row * ( TILE + LABEL ) + LABEL;
+					camera.left = camera.bottom = - radius;
+					camera.right = camera.top = radius;
+					camera.position.copy( center ).addScaledVector( view, 60 );
+					camera.lookAt( center );
+					camera.updateProjectionMatrix();
+					renderer.setViewport( x, height - y - TILE, TILE, TILE );
+					renderer.setScissor( x, height - y - TILE, TILE, TILE );
+					renderer.render( scene, camera );
+					ctx.drawImage( renderer.domElement, x, y, TILE, TILE, x, y, TILE, TILE );
+					ctx.fillStyle = '#fff';
+					const entry = CATALOG[ id ];
+					ctx.fillText( ( v ? `front ${ entry ? entry.front : '?' }` : id.split( '/' )[ 1 ].slice( 0, 22 ) ) + ` ${ v ? metres.toFixed( 1 ) + ' m' : '' }`, x + 3, y - 4 );
+					k ++;
+
+				} );
+
+				scene.remove( model );
+
+			}
+
+			sheets[ kit ] = canvas.toDataURL( 'image/png' );
+			document.body.replaceChildren( canvas );
+
+		}
+
+		window.sheets = sheets;
+
+	</script>
+</body>
+</html>

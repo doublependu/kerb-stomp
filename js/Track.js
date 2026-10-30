@@ -120,7 +120,7 @@ const DECO_CELLS = [
 // skip decoration tiles where the hillside would leave them floating.
 // reserved: cells (keys 'x,z') the scenery has planned for (Scenery.js),
 // left without a decoration tile.
-export function buildTrack( scene, models, customCells, { chunk = DECO_CHUNK, shape = null, bent = null, reserved = new Map() } = {} ) {
+export function buildTrack( scene, models, customCells, { chunk = DECO_CHUNK, shape = null, bent = null, reserved = new Map(), tents = true } = {} ) {
 
 	const trackGroup = new THREE.Group();
 	trackGroup.position.y = -0.5;
@@ -221,8 +221,8 @@ export function buildTrack( scene, models, customCells, { chunk = DECO_CHUNK, sh
 
 				if ( dist <= 1 ) {
 
-					// ~15% chance of tents in the empty ring
-					if ( hash( gx, gz ) % 7 === 0 ) {
+					// ~15% chance of tents in the empty ring (a theme has its own)
+					if ( tents && hash( gx, gz ) % 7 === 0 ) {
 
 						tentPositions.push( x, z, hash( gx, gz ) % 4 );
 
@@ -439,7 +439,7 @@ export function computeTrackBounds( cells ) {
 
 }
 
-function bytesToBase64url( bytes ) {
+export function bytesToBase64url( bytes ) {
 
 	let binary = '';
 	for ( let i = 0; i < bytes.length; i ++ ) binary += String.fromCharCode( bytes[ i ] );
@@ -448,7 +448,7 @@ function bytesToBase64url( bytes ) {
 
 }
 
-function base64urlToBytes( str ) {
+export function base64urlToBytes( str ) {
 
 	const base64 = str.replace( /-/g, '+' ).replace( /_/g, '/' );
 	const binary = atob( base64 );

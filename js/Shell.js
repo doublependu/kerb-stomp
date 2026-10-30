@@ -151,25 +151,7 @@ export class Shell {
 
 	setupLinks() {
 
-		const map = new URLSearchParams( location.search ).get( 'map' );
-
-		for ( const link of document.querySelectorAll( '.editor-link' ) ) {
-
-			if ( OFFLINE ) {
-
-				link.hidden = true;
-				continue;
-
-			}
-
-			if ( map ) {
-
-				link.href = 'editor.html?map=' + map;
-				link.textContent = 'Edit this track';
-
-			}
-
-		}
+		for ( const link of document.querySelectorAll( '.editor-link' ) ) link.hidden = OFFLINE;
 
 		const download = document.getElementById( 'download-link' );
 
@@ -188,7 +170,7 @@ export class Shell {
 	}
 
 	// The pickers: tracks (with the custom one from ?map=, if any) and cars
-	buildPickers( track, editorMap ) {
+	buildPickers( track, editorQuery ) {
 
 		const tracks = document.getElementById( 'track-picker' );
 		const list = track.custom ? [ ...TRACKS, track ] : TRACKS;
@@ -208,12 +190,13 @@ export class Shell {
 
 		}
 
-		// "Edit this track" for built-in tracks too
-		if ( editorMap && ! OFFLINE ) {
+		// "Edit this track": the road and scenery of a custom track, the scenery
+		// of a built-in one (and the road, on those without hills)
+		if ( ! OFFLINE ) {
 
 			for ( const link of document.querySelectorAll( '.editor-link' ) ) {
 
-				link.href = 'editor.html?map=' + editorMap;
+				link.href = 'editor.html?' + editorQuery;
 				link.textContent = 'Edit this track';
 
 			}

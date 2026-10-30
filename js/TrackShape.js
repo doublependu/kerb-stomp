@@ -124,6 +124,23 @@ export class TrackShape {
 
 	}
 
+	// The road's exact normal at s, `lateral` left of the centerline. Height
+	// goes by s alone, and round a turn s passes faster on the inside and
+	// slower on the outside (dq/ds = t · (1 + lateral · dθ/ds) at a point q
+	// offset from the line), so the road there is a helix, steeper than the
+	// centerline's slope on the inside. Capped: at the pivot it's a wall.
+	roadNormal( s, lateral, out ) {
+
+		const line = this.line;
+		const dir = line.directionAt( s );
+		const a = line.directionAt( s + 0.25 ) - line.directionAt( s - 0.25 );
+		const turn = Math.atan2( Math.sin( a ), Math.cos( a ) ) / 0.5;
+		const k = line.slopeAt( s ) / Math.max( 0.25, 1 + lateral * turn );
+		setNormal( out, - k * Math.sin( dir ), - k * Math.cos( dir ) );
+		return out;
+
+	}
+
 	// The ground under a car at (x, z), on the pass its projection follows:
 	// out.height (y of the surface), out.normal [x, y, z], out.road
 	surface( x, z, proj, out ) {

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { createWorldSettings, createWorld, addBroadphaseLayer, addObjectLayer, enableCollision, updateWorld, rigidBody, box, MotionType } from 'crashcat';
 import { Vehicle } from './Vehicle.js';
-import { buildWallColliders, buildHillColliders, createSphereBody } from './Physics.js';
+import { buildWallColliders, buildHillColliders, createSphereBody, RoadTile } from './Physics.js';
 import { TrackShape, GROUND_Y, STRIP_IN, KERB_IN } from './TrackShape.js';
 import { computeTrackBounds, computeSpawnPosition, TRACK_CELLS } from './Track.js';
 import { CELL } from './TrackPath.js';
@@ -139,6 +139,7 @@ export class Race {
 		this.world = world;
 		this.bodies = new Map();
 		this.groundBodies = new Set( [ this.groundBody, ...( hills || [] ) ] );
+		this.tileSlots = [];
 
 		this.contactListener = {
 			onContactAdded: ( bodyA, bodyB ) => {
@@ -202,6 +203,16 @@ export class Race {
 		vehicle.onFall = () => this.respawn( car );
 		if ( driver ) driver.racing = this.racing;
 
+		// Hills: this car's own piece of road under it (RoadTile)
+		if ( this.shape.hilly ) {
+
+			const slot = this.tileSlots.findIndex( ( used ) => ! used );
+			car.tile = new RoadTile( this.world, this.shape, vehicle.rigidBody, slot < 0 ? this.tileSlots.length : slot );
+			this.tileSlots[ car.tile.slot = slot < 0 ? this.tileSlots.length : slot ] = true;
+			this.groundBodies.add( car.tile.body );
+
+		}
+
 		this.cars.push( car );
 		this.bodies.set( vehicle.rigidBody, car );
 		if ( player ) this.player = car;
@@ -216,6 +227,15 @@ export class Race {
 
 		rigidBody.remove( this.world, car.vehicle.rigidBody );
 		this.bodies.delete( car.vehicle.rigidBody );
+
+		if ( car.tile ) {
+
+			this.groundBodies.delete( car.tile.body );
+			this.tileSlots[ car.tile.slot ] = false;
+			car.tile.remove();
+
+		}
+
 		this.cars.splice( this.cars.indexOf( car ), 1 );
 
 	}
@@ -463,6 +483,14 @@ export class Race {
 		}
 
 		const moving = this.phase === 'racing' || this.phase === 'done';
+
+		for ( const car of cars ) {
+
+			if ( ! car.tile || car.carry ) continue;
+			const p = car.vehicle.spherePos;
+			car.tile.place( p.x, p.y, p.z, car.proj );
+
+		}
 
 		updateWorld( this.world, this.contactListener, dt );
 
