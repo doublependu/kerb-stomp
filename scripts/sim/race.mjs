@@ -342,7 +342,7 @@ if ( args.includes( '--balance' ) ) {
 
 						const laps = ( c ) => c.lapTimes.map( ( t ) => t.toFixed( 1 ) ).join( ' ' );
 						console.log( `  seed ${ seed } race ${ results.indexOf( result ) + 1 }: reference ${ best === null ? 'par ' + track.par : best.toFixed( 2 ) }, you ${ laps( player ) } → ${ race.position( player ) }` );
-						for ( const c of field ) console.log( `    target ${ c.targetLap.toFixed( 2 ) } skill ${ c.driver.skill.toFixed( 2 ) } pace ${ c.driver.pace.toFixed( 2 ) }: ${ laps( c ) }` );
+						for ( const c of field ) console.log( `    ${ c.ace ? 'ace ' : '' }target ${ c.targetLap.toFixed( 2 ) } skill ${ c.driver.skill.toFixed( 2 ) } pace ${ c.driver.pace.toFixed( 2 ) }: ${ laps( c ) }` );
 
 					}
 

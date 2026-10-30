@@ -1206,6 +1206,7 @@ async function init() {
 					player: car.player,
 					skill: car.driver && ! car.player ? car.driver.skill : null,
 					target: car.targetLap,
+					ace: car.ace,
 					pace: car.driver ? car.driver.pace : null,
 					lap: car.counter.lap,
 					lapTimes: car.lapTimes,

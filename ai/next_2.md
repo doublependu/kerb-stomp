@@ -125,3 +125,9 @@ Against plan_2's targets:
 2. **Your calls** on balance findings 1–4.
 3. If phones struggle, a low-tier scenery setting (skip ring-2 buildings, no building shadows).
 4. **Editor support for heights and crossings**, if you want user-made hill tracks: the `?map=` codec needs a version byte and a height per cell.
+
+## Follow-up: first-race aces
+
+The first race on a track was too easy to win (`npm run sim -- --balance --tracks classic,monaco --seeds 4`, race 1: the average bot won 7 of 8, the expert all 8). Now the two fastest NPCs in it are aces (`Difficulty.ACES`): one at the track's best NPC lap (skill 1, full pace) and one 5% slower than that (skill ≈ 0.88). Neither gets lap correction or the rubber band. Later races on the track, aimed at the player's best lap, have no aces.
+
+Race 1 with the aces, same runs: the expert bot wins 2 of 8 (mean 2.1), the average bot is always 3rd, behind the two aces, and the novice is 3rd–4th and was a lap down at the end in all 4 Classic races.

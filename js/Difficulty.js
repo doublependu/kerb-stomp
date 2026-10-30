@@ -23,6 +23,11 @@ export const FIRST_LAP = 0.92;
 // player's first lap re-aims it (on a two-lap track that's half the race)
 export const FIRST_RACE = 1.06;
 
+// Except the two fastest of that field, the aces: held at the track's best
+// NPC lap and 5% slower than it, whatever the player does (no lap
+// correction, no rubber band), so the first race takes a quick lap to win
+export const ACES = [ 1, 1.05 ];
+
 // NPC lap at full pace by skill 0, 0.25, 0.5, 0.75, 1 on Classic, from
 // `npm run sim -- --calibrate`. Tracks carry their own (Tracks.js); custom
 // ones scale Classic's by centerline length.
