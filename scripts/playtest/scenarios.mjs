@@ -585,6 +585,12 @@ export const SCENARIOS = {
 		await page.waitForFunction( () => window.__editor && window.__editor.items() && window.__editor.items().length > 0, null, { timeout: 30000 } );
 		check( checks, 'editor: Suzuka opens with its road locked', await page.locator( '#btn-road' ).isDisabled() );
 
+		// A custom track takes a theme, with its own stands and colours
+		await page.goto( env.url + '?playtest&noflyover&theme=industrial&map=' + TRACKS.oval );
+		await page.waitForFunction( () => window.__kerb && window.__kerb.sceneryLoaded(), null, { timeout: 30000 } );
+		const themed = await page.evaluate( () => window.__kerb.plan.items.map( ( i ) => i.id ) );
+		check( checks, 'game: a custom track in a theme gets its sites', themed.some( ( id ) => id.startsWith( 'industrial/' ) ) && ! themed.some( ( id ) => id.includes( 'pits' ) ), `${ themed.length } items` );
+
 		check( checks, 'editor-scenery: no page errors', errors.length === 0, errors.slice( 0, 2 ).join( ' | ' ) );
 		await context.close();
 		return { checks, runs: [] };

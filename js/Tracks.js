@@ -18,9 +18,9 @@
 // The best NPC now laps 10–30% under that (ai[ 4 ]); lower ace toward it to
 // make the aces harder.
 //
-// theme: the scenery round the whole track (js/Scenery.js THEMES; Classic
-// and the editor's tracks get the forest's landmarks only); variations: a
-// kit's alternative colormap for this track.
+// theme: the whole track's look (js/Scenery.js THEMES), its own: no two share
+// one. Classic and the editor's tracks without a theme get the forest's
+// landmarks only.
 //
 // heights: road height (m) at the centre of each layout cell, for hills (a
 // crest is a cell higher than both neighbours). unsealed: [ first, last ]
@@ -67,7 +67,6 @@ export const TRACKS = [
 		layout: 'SSSSS RL S R SS LR S R SS RL SSSS LR SS R SSSSS R SS',
 		heading: 'N',
 		theme: 'village',
-		variations: { fantasy: 'a' },
 	},
 	{
 		id: 'monaco',
@@ -80,7 +79,6 @@ export const TRACKS = [
 		layout: 'SS R S LR S R LSL SS R S R SSSSS LR S R SS RL SL R SSS R SS',
 		heading: 'E',
 		theme: 'suburb',
-		variations: { suburban: 'b' },
 	},
 	{
 		id: 'suzuka',
@@ -95,7 +93,6 @@ export const TRACKS = [
 		heights: [ 0, 0, 0, 0, 0, 0.4, 0.9, 1.3, 1.5, 1.5, 1.3, 0.9, 0.5, 0.2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.3, 0.6, 0.6, 0.6, 1.1, 1.9, 2.8, 3.5, 4.0, 2.6, 1.6, 0.7, 0.1, 0, 0, 0 ],
 		heading: 'E',
 		theme: 'industrial',
-		variations: { industrial: 'c' },
 	},
 	{
 		id: 'bathurst',
@@ -110,7 +107,7 @@ export const TRACKS = [
 		heights: [ 0, 0, 0, 0.5, 1, 1.7, 2.4, 3, 3.8, 4.6, 5.2, 5.6, 5.9, 6, 6, 5, 4.2, 3.6, 3.2, 3, 2.8, 2.2, 1, 2.2, 0.8, 0.3, 0.1, 0, 0, 0, 0, 0, 0, 0 ],
 		unsealed: [ [ 12, 14 ] ],
 		heading: 'E',
-		theme: 'forest',
+		theme: 'mountain',
 	},
 ];
 

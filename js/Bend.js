@@ -47,9 +47,11 @@ function bake( model, filter ) {
 		const source = child.geometry.index ? child.geometry.toNonIndexed() : child.geometry;
 		const geometry = new THREE.BufferGeometry();
 
-		for ( const name of [ 'position', 'normal', 'uv' ] ) {
+		for ( const name of [ 'position', 'normal', 'uv', 'color' ] ) {
 
 			const a = source.getAttribute( name );
+			if ( ! a ) continue;
+
 			const array = new Float32Array( a.count * a.itemSize );
 			for ( let i = 0; i < a.count; i ++ ) for ( let k = 0; k < a.itemSize; k ++ ) array[ i * a.itemSize + k ] = a.getComponent( i, k );
 			geometry.setAttribute( name, new THREE.BufferAttribute( array, a.itemSize ) );
@@ -127,13 +129,20 @@ function sliver( a, b, c ) {
 
 function toTriangles( geometry ) {
 
-	const pos = geometry.getAttribute( 'position' ), uv = geometry.getAttribute( 'uv' );
+	const pos = geometry.getAttribute( 'position' ), uv = geometry.getAttribute( 'uv' ), color = geometry.getAttribute( 'color' );
 	const tris = [];
 
 	for ( let i = 0; i < pos.count; i += 3 ) {
 
 		const tri = [];
-		for ( let k = 0; k < 3; k ++ ) tri.push( [ pos.getX( i + k ), pos.getY( i + k ), pos.getZ( i + k ), uv.getX( i + k ), uv.getY( i + k ) ] );
+
+		for ( let k = 0; k < 3; k ++ ) {
+
+			const shade = color ? [ color.getX( i + k ), color.getY( i + k ), color.getZ( i + k ) ] : [ 1, 1, 1 ];
+			tri.push( [ pos.getX( i + k ), pos.getY( i + k ), pos.getZ( i + k ), uv.getX( i + k ), uv.getY( i + k ), ...shade ] );
+
+		}
+
 		tris.push( tri );
 
 	}
@@ -194,6 +203,7 @@ class Builder {
 
 		this.positions = [];
 		this.uvs = [];
+		this.colors = [];
 
 	}
 
@@ -203,6 +213,7 @@ class Builder {
 
 			this.positions.push( v[ 0 ], v[ 1 ], v[ 2 ] );
 			this.uvs.push( uv ? uv[ 0 ] : v[ 3 ], uv ? uv[ 1 ] : v[ 4 ] );
+			this.colors.push( 1, 1, 1 );
 
 		}
 
@@ -229,22 +240,25 @@ class Builder {
 
 	}
 
-	geometry() {
+	// colored: with the vertex colours a painted tile's material needs
+	geometry( colored ) {
 
 		// No slivers (see split), judged on the positions as stored
-		const p = new Float32Array( this.positions ), positions = [], uvs = [];
+		const p = new Float32Array( this.positions ), positions = [], uvs = [], colors = [];
 
 		for ( let i = 0; i < p.length; i += 9 ) {
 
 			if ( sliver( p.subarray( i, i + 3 ), p.subarray( i + 3, i + 6 ), p.subarray( i + 6, i + 9 ) ) ) continue;
 			for ( let k = 0; k < 9; k ++ ) positions.push( p[ i + k ] );
 			for ( let k = 0; k < 6; k ++ ) uvs.push( this.uvs[ i / 3 * 2 + k ] );
+			if ( colored ) for ( let k = 0; k < 9; k ++ ) colors.push( this.colors[ i + k ] );
 
 		}
 
 		const geometry = new THREE.BufferGeometry();
 		geometry.setAttribute( 'position', new THREE.Float32BufferAttribute( positions, 3 ) );
 		geometry.setAttribute( 'uv', new THREE.Float32BufferAttribute( uvs, 2 ) );
+		if ( colored ) geometry.setAttribute( 'color', new THREE.Float32BufferAttribute( colors, 3 ) );
 		geometry.computeVertexNormals(); // non-indexed: flat faces, like the kits
 		return geometry;
 
@@ -307,7 +321,7 @@ export function bendTrack( models, shape ) {
 			// Placed in the cell and lifted (inline: this runs for every
 			// vertex of every cell)
 			const m = _place.elements;
-			const { positions, uvs } = builder;
+			const { positions, uvs, colors } = builder;
 
 			for ( const tri of sliced.tris ) {
 
@@ -318,6 +332,7 @@ export function bendTrack( models, shape ) {
 					const z = m[ 2 ] * v[ 0 ] + m[ 6 ] * v[ 1 ] + m[ 10 ] * v[ 2 ] + m[ 14 ];
 					positions.push( x, y + profile.at( i + cellFraction( x, z, cx, cz, e, f ) ) / GRID_SCALE, z );
 					uvs.push( v[ 3 ], v[ 4 ] );
+					colors.push( v[ 5 ], v[ 6 ], v[ 7 ] );
 
 				}
 
@@ -332,7 +347,7 @@ export function bendTrack( models, shape ) {
 	const mesh = ( builder ) => {
 
 		if ( ! builder.positions.length ) return null;
-		const m = new THREE.Mesh( builder.geometry(), material );
+		const m = new THREE.Mesh( builder.geometry( material.vertexColors ), material );
 		m.castShadow = true;
 		m.receiveShadow = true;
 		return m;
@@ -421,7 +436,7 @@ export function terrainMesh( terrain, material ) {
 	const y = ROAD_Y - 0.04;
 	builder.quad( [ x0, y, z0 ], [ x1, y, z0 ], [ x1, y, z1 ], [ x0, y, z1 ], GRASS_UV, [ 0, 1, 0 ] );
 
-	const mesh = new THREE.Mesh( builder.geometry(), material );
+	const mesh = new THREE.Mesh( builder.geometry( material.vertexColors ), material );
 	mesh.castShadow = true;
 	mesh.receiveShadow = true;
 	return mesh;

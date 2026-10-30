@@ -215,6 +215,7 @@
 			<select id="sc-theme" aria-label="Theme">
 				<option value="">No theme</option>
 				<option value="forest">Forest</option>
+				<option value="mountain">Mountain</option>
 				<option value="stadium">Stadium</option>
 				<option value="village">Village</option>
 				<option value="suburb">Suburb</option>
@@ -236,9 +237,10 @@
 	import { centerline } from './js/TrackPath.js';
 	import { TrackShape, ROAD_Y } from './js/TrackShape.js';
 	import { bendTrack } from './js/Bend.js';
+	import { withColormap, paintTile } from './js/Materials.js';
 	import { SCENERY } from './js/SceneryList.js';
 	import { CATALOG, scaleOf } from './js/SceneryCatalog.js';
-	import { planScenery, encodeLayout, footprint, roadGap, roadSamples, hidesRoad, colormapOf, CLEARANCE } from './js/Scenery.js';
+	import { planScenery, encodeLayout, footprint, roadGap, roadSamples, hidesRoad, colormapOf, themeOf, leafTint, CLEARANCE } from './js/Scenery.js';
 
 	// ─── Auto-tile lookup ─────────────────────────────────────
 	// Bitmask: N=8 S=4 E=2 W=1
@@ -1079,14 +1081,13 @@
 
 	const TURN = Math.PI / 12; // 15°
 	const STORE = 'racing-editor-scenery:' + ( builtIn ? builtIn.id : 'custom' );
-	const KIT_OF_THEME = { forest: 'forest', stadium: 'racing', village: 'fantasy', suburb: 'suburban', industrial: 'industrial' };
+	const KIT_OF_THEME = { forest: 'forest', mountain: 'forest', stadium: 'racing', village: 'fantasy', suburb: 'suburban', industrial: 'industrial' };
 
 	const sceneryGroup = new THREE.Group();
 	scene.add( sceneryGroup );
 
 	const roots = new Map(); // item → its model
 	const modelCache = new Map();
-	const tints = new Map();
 	const undoStack = [], redoStack = [];
 
 	let theme = params.get( 'theme' ) || ( builtIn ? builtIn.theme : '' ) || '';
@@ -1113,6 +1114,16 @@
 		trackGroup.add( bent.track );
 		for ( const mesh of [ bent.bridge, bent.arch ] ) if ( mesh ) trackGroup.add( mesh );
 		scene.add( bent.terrain );
+
+	}
+
+	// The theme's sky and ground
+	function paintWorld() {
+
+		const look = themeOf( { theme } );
+		scene.background.setHex( look.sky );
+		scene.fog.color.setHex( look.sky );
+		groundMat.color.setHex( look.grass );
 
 	}
 
@@ -1158,30 +1169,14 @@
 	// The model in its colour variation, if it has one
 	async function tinted( root, item ) {
 
-		const name = colormapOf( item, ( builtIn && builtIn.variations ) || {} );
+		const name = colormapOf( item, themeOf( sceneryTrack() ).variations );
 		if ( name === SCENERY[ item.id ].kit ) return;
 
 		await colormapLoaded( name );
 
 		root.traverse( ( child ) => {
 
-			if ( ! child.isMesh ) return;
-
-			const key = child.material.uuid + name;
-
-			if ( ! tints.has( key ) ) {
-
-				const material = child.material.clone();
-				const map = getColormap( name ).clone();
-				map.offset.copy( child.material.map.offset );
-				map.repeat.copy( child.material.map.repeat );
-				map.needsUpdate = true;
-				material.map = map;
-				tints.set( key, material );
-
-			}
-
-			child.material = tints.get( key );
+			if ( child.isMesh ) child.material = withColormap( child.material, getColormap( name ) );
 
 		} );
 
@@ -1664,6 +1659,7 @@
 	document.getElementById( 'sc-theme' ).addEventListener( 'change', async ( e ) => {
 
 		theme = e.target.value;
+		paintWorld();
 		remember();
 		select( null );
 		await generate();
@@ -1996,6 +1992,18 @@
 	// ─── Init & render loop ───────────────────────────────────
 
 	await loadModels();
+
+	// A built-in track's road tiles in its theme, as in the game
+	if ( builtIn && themeOf( builtIn ).variations.starter ) {
+
+		const look = themeOf( builtIn );
+		const palette = 'starter-' + look.variations.starter;
+		await colormapLoaded( palette );
+		for ( const name of Object.keys( models ) ) paintTile( models[ name ], getColormap( palette ), leafTint( look ) );
+
+	}
+
+	paintWorld();
 	loadSaved();
 
 	// Start with a finish cell if the grid is empty

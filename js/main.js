@@ -19,13 +19,13 @@ import { GameAudio } from './Audio.js';
 import { loadBest, saveBest } from './LapTimer.js';
 import { Hud } from './Hud.js';
 import { ColorMapGLTFLoader, colormapLoaded, getColormap } from './Loader.js';
-import { planScenery, sceneryPads, boardMesh, sceneryModels, sceneryColormaps, buildScenery } from './Scenery.js';
+import { planScenery, sceneryPads, boardMesh, sceneryModels, sceneryColormaps, buildScenery, themeOf, leafTint } from './Scenery.js';
 import { MODEL_URLS } from './Assets.js';
 import { PRESETS, detectTier, loadSetting, saveSetting, loadAutoTier, saveAutoTier, lowerTier, FrameMonitor } from './Quality.js';
 import { Shell, lockViewport } from './Shell.js';
 import { Settings, saveMedal } from './Settings.js';
 import { SunShadow } from './SunShadow.js';
-import { setLambert } from './Materials.js';
+import { setLambert, withColormap, paintTile } from './Materials.js';
 import { Debris } from './Debris.js';
 import { Wand } from './Wand.js';
 import { Occluders, splitArch } from './Occluders.js';
@@ -190,8 +190,12 @@ async function init() {
 	document.body.appendChild( renderer.domElement );
 
 	const scene = new THREE.Scene();
-	scene.background = new THREE.Color( 0xadb2ba );
-	scene.fog = new THREE.Fog( 0xadb2ba, 30, 55 );
+	// The theme's sky, and its ground's palette: fetched alongside the models
+	const theme = themeOf( track );
+	const palette = theme.variations.starter ? 'starter-' + theme.variations.starter : null;
+	if ( palette ) getColormap( palette );
+	scene.background = new THREE.Color( theme.sky );
+	scene.fog = new THREE.Fog( theme.sky, 30, 55 );
 
 	const dirLight = new THREE.DirectionalLight( 0xffffff, 3 );
 	dirLight.position.set( 11.4, 15, -5.3 );
@@ -322,13 +326,26 @@ async function init() {
 	let pieceMaterial = null;
 	models[ 'track-straight' ].traverse( ( child ) => pieceMaterial = pieceMaterial || ( child.isMesh ? child.material : null ) );
 
+	// The theme's own ground: the tiles, the hillside, the pads and the horizon
+	// take its palette, which only changes the grass, and the pines its leaves
+	let groundMaterial = pieceMaterial;
+
+	if ( palette ) {
+
+		await colormapLoaded( palette );
+		groundMaterial = withColormap( pieceMaterial, getColormap( palette ) );
+		const tint = leafTint( theme );
+		for ( const name of Object.keys( models ) ) if ( /^(track|decoration)-/.test( name ) ) paintTile( models[ name ], getColormap( palette ), tint );
+
+	}
+
 	const chunk = PLAYTEST && params.has( 'chunk' ) ? { chunk: Number( params.get( 'chunk' ) ) } : {};
 	const bent = shape.hilly ? bendTrack( models, shape ) : null;
 	performance.mark( 'kerb:bend' );
-	const trackGroups = buildTrack( scene, models, classic ? null : track.cells, { ...chunk, shape, bent, reserved: scenery.cells, tents: classic || ! track.theme } );
+	const trackGroups = buildTrack( scene, models, classic ? null : track.cells, { ...chunk, shape, bent, reserved: scenery.cells, tents: classic || ! track.theme, backdrop: theme.backdrop } );
 
-	for ( const mesh of [ sceneryPads( scenery, pieceMaterial ), boardMesh( scenery, pieceMaterial ) ] ) if ( mesh ) scene.add( mesh );
-	const horizon = horizonMesh( pieceMaterial, [ 0.031, 0.875 ], bounds.centerX, bounds.centerZ ); // the tiles' grass
+	for ( const mesh of [ sceneryPads( scenery, groundMaterial ), boardMesh( scenery, pieceMaterial ) ] ) if ( mesh ) scene.add( mesh );
+	const horizon = horizonMesh( groundMaterial, [ 0.031, 0.875 ], bounds.centerX, bounds.centerZ ); // the tiles' grass
 	scene.add( horizon );
 	performance.mark( 'kerb:track' );
 
@@ -702,7 +719,7 @@ async function init() {
 
 		const ids = sceneryModels( scenery );
 		const loaded = await Promise.all( ids.map( ( id ) => loadModel( id ).catch( () => null ) ) );
-		const variations = track.variations || {};
+		const { variations } = theme;
 		await Promise.all( sceneryColormaps( scenery, variations ).map( colormapLoaded ) );
 
 		const group = buildScenery( scenery, Object.fromEntries( ids.map( ( id, i ) => [ id, loaded[ i ] ] ) ), { variations, baseMaterial: pieceMaterial, colormap: getColormap } );

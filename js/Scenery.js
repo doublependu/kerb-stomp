@@ -51,32 +51,72 @@ const ACROSS = [ - 2.6, 0, 2.6 ];
 const GRASS = [ 0.031, 0.875 ]; // like the ground tiles
 const CONCRETE = [ 0.281, 0.875 ];
 
-// One theme per track (Tracks.js theme): the colour of its ground pads, a
-// landmark for each turn, what grows on its hillsides, and its sites: how
-// its pieces go together along the road (Planner). 'id@a' takes the kit's
-// colour variation a.
+// One theme per track, none shared (Tracks.js theme; `npm run tracks` checks
+// it), so no two tracks look alike: its ground and sky, its colours, how its
+// crowd watches the race, a landmark for each turn, what grows on its
+// hillsides, and its sites: how its pieces go together along the road
+// (Planner).
+// grass and leaf: the ground's colour and the Starter Kit's pines'.
+// backdrop: the filler beyond the track, 'forest' or 'empty'.
+// variations: the colormap per kit (kit → name, `npm run palettes`; starter is
+// the ground's). stands: the model of its grandstand at the start line, and
+// how many sections. 'id@a' in a list takes the kit's colour variation a.
 export const THEMES = {
 	forest: {
+		sky: 0xadb2ba,
+		grass: 0x328260,
+		leaf: 0x328260,
+		backdrop: 'forest',
+		variations: {},
 		ground: GRASS,
 		landmarks: [ 'forest/lookout', 'forest/treehouse', 'forest/rope-bridge', 'forest/camp', 'forest/archery', 'forest/rock-pile' ],
 		hill: [ 'forest/tree', 'forest/tree-high', 'forest/tree', 'forest/rocks-low', 'forest/stones' ],
 		sites: forestSites,
 	},
+	mountain: {
+		sky: 0xe6d3ab,
+		grass: 0x8f7429,
+		leaf: 0x66733a,
+		backdrop: 'forest',
+		variations: { forest: 'mountain', racing: 'mountain', starter: 'mountain' },
+		ground: GRASS,
+		stands: { id: 'racing/grandStand', count: 5 },
+		landmarks: [ 'forest/lookout', 'forest/rock-pile', 'forest/rope-bridge', 'forest/camp', 'forest/treehouse', 'forest/archery' ],
+		hill: [ 'forest/tree-high', 'forest/rocks-low', 'forest/tree', 'forest/stones', 'forest/tree-high' ],
+		sites: forestSites,
+	},
 	stadium: {
+		sky: 0xbdd8ec,
+		grass: 0x478a2e,
+		leaf: 0x2c7a4e,
+		backdrop: 'forest',
+		variations: { starter: 'stadium' },
 		ground: CONCRETE,
-		landmarks: [ 'racing/grandStandCoveredRound', 'racing/gantry' ],
+		landmarks: [ 'racing/billboard', 'racing/tentLong', 'racing/bannerTowerGreen', 'racing/billboardLow' ],
 		hill: [ 'racing/treeLarge', 'racing/treeSmall' ],
 		sites: stadiumSites,
-		landmarksLast: true, // the grand run takes the turns it can
+		landmarksLast: true, // the stands and the pits go first
 	},
 	village: {
+		sky: 0xe9dcc0,
+		grass: 0x6c7a26,
+		leaf: 0x4b6a24,
+		backdrop: 'forest',
+		variations: { fantasy: 'a', racing: 'village', starter: 'village' },
 		ground: [ 0.031, 0.62 ], // sandy path
+		stands: { id: 'racing/grandStandAwning', count: 8 },
 		landmarks: [ 'fantasy/house-windmill', 'fantasy/house-watermill', 'fantasy/house-tower', 'fantasy/market', 'fantasy/fountain-square' ],
 		hill: [ 'fantasy/tree', 'fantasy/tree-high', 'fantasy/tree', 'fantasy/rock-large' ],
 		sites: villageSites,
 	},
 	suburb: {
+		sky: 0xa8dcf0,
+		grass: 0xb09a6e,
+		leaf: 0x3a6a4c,
+		backdrop: 'empty',
+		variations: { suburban: 'b', racing: 'suburb', starter: 'suburb' },
 		ground: [ 0.281, 0.62 ], // lawn
+		stands: { id: 'racing/grandStandCovered', count: 5 },
 		landmarks: [
 			'suburban/building-type-d@a', 'suburban/terrace', 'suburban/building-type-b@c', 'suburban/garden', 'suburban/building-type-n',
 			'suburban/building-type-f@a', 'suburban/park', 'suburban/building-type-t@c', 'suburban/building-type-u',
@@ -85,16 +125,37 @@ export const THEMES = {
 		sites: suburbSites,
 	},
 	industrial: {
+		sky: 0x9aa4b0,
+		grass: 0x5a606c,
+		leaf: 0x2c5e52,
+		backdrop: 'empty',
+		variations: { industrial: 'c', racing: 'industrial', starter: 'industrial' },
 		ground: CONCRETE,
+		stands: { id: 'racing/grandStand', count: 6 },
 		landmarks: [
 			'industrial/chimney-large', 'industrial/water-tower', 'industrial/wind-farm', 'industrial/tank-farm', 'industrial/works',
 			'industrial/building-l', 'industrial/building-f', 'industrial/building-n',
 		],
-		// The kit has no trees; the paddock's kit has
+		// The kit has no trees: the Racing Kit's, as this theme's dark cedars
 		hill: [ 'racing/treeLarge', 'racing/treeSmall', 'racing/treeLarge' ],
 		sites: industrialSites,
 	},
 };
+
+// The theme a track goes by
+export function themeOf( track ) {
+
+	return THEMES[ track.theme ] || THEMES.forest;
+
+}
+
+// What turns the grass swatch into the theme's leaves (Materials.paintTile)
+export function leafTint( theme ) {
+
+	const grass = new THREE.Color( theme.grass ), leaf = new THREE.Color( theme.leaf );
+	return [ leaf.r / grass.r, leaf.g / grass.g, leaf.b / grass.b ];
+
+}
 
 const DIRS = { N: [ 0, - 1 ], S: [ 0, 1 ], E: [ 1, 0 ], W: [ - 1, 0 ] };
 
@@ -308,9 +369,9 @@ class Planner {
 			const w = SCENERY[ id ].w * scale, d = SCENERY[ id ].d * scale;
 			const front = this.spot( s, side, back );
 
-			if ( last && Math.hypot( front.x - last.x, front.z - last.z ) < ( last.w + w ) / 2 + gap ) {
+			if ( last && Math.hypot( front.x - last.x, front.z - last.z ) < ( last.w + w ) / 2 + gap - 0.01 ) {
 
-				s += 0.25;
+				s += 0.05;
 				continue;
 
 			}
@@ -324,7 +385,7 @@ class Planner {
 
 			}
 
-			s += item ? 0.25 : 0.5;
+			s += item ? w * 0.45 : 0.5;
 
 		}
 
@@ -462,24 +523,35 @@ function reserve( plan, item, road, ground, raised ) {
 
 // ─── The sites ─────────────────────────────────────────────
 
-// The finish straight's pits and a couple of stands on the far side, low
-// barriers on the camera's
-function paddock( p, { reach = 9, stands = 2 } = {} ) {
+// Stands stand where the crowd sees the race best: in one block on a straight,
+// fronts right behind the wall, square to the road, on the camera's far side
+// (from the other side they'd hide the road, and show only their backs). Never
+// round a turn. Centred on `at` as far as the straight allows.
+function standRow( p, q, side, id, { most = Infinity, at = ( q.s0 + q.s1 ) / 2, ground = p.theme.ground } = {} ) {
 
-	const line = p.lineS, side = p.farSide( line );
-	p.row( {
-		s0: line - reach, s1: line + reach, side, ground: CONCRETE,
-		pieceAt: ( k, t ) => Math.abs( t - 0.5 ) < 0.2 ? 'racing/pitsOffice' : k % 2 ? 'racing/pitsGarageClosed' : 'racing/pitsGarage',
-	} );
+	const w = SCENERY[ id ].w * scaleOf( id );
+	const count = Math.min( most, Math.floor( ( q.s1 - q.s0 ) / w ) );
+	if ( count < 1 ) return [];
 
-	p.row( { s0: line + reach, s1: line + reach + 6 * stands, side, ground: CONCRETE, pieceAt: ( k ) => k % 2 ? 'racing/grandStand' : 'racing/grandStandCovered', most: stands } );
-	p.row( { s0: line - reach, s1: line + reach, side: - side, ground: GRASS, pieceAt: () => 'racing/barrierWall', most: 3 } );
+	const s0 = Math.max( q.s0, Math.min( q.s1 - count * w, at - count * w / 2 ) );
+	return p.row( { s0: s0 + w / 2, s1: s0 + count * w, side, back: LANE + 0.1, ground, most: count, pieceAt: () => id } );
+
+}
+
+// The theme's grandstand at the start line
+function mainStand( p ) {
+
+	const { stands } = p.theme;
+	const q = p.finish;
+	if ( ! stands || ! q ) return;
+
+	const at = p.lineS >= q.s0 ? p.lineS : p.lineS + p.line.length;
+	standRow( p, q, p.farSide( p.lineS ), stands.id, { most: stands.count, at } );
 
 }
 
 function stadiumSites( p ) {
 
-	const { length } = p.line;
 	const main = p.finish;
 	const pitSide = p.farSide( p.lineS );
 
@@ -497,55 +569,47 @@ function stadiumSites( p ) {
 	p.row( { s0: main.s0 + 0.5, s1: main.s1 - 0.5, side: - pitSide, ground: GRASS, pieceAt: () => 'racing/barrierWall' } );
 	p.row( { s0: main.s0 + 4, s1: main.s1 - 4, side: - pitSide, back: LANE + 1.2, gap: CELL, ground: GRASS, pieceAt: () => 'racing/billboardLow' } );
 
-	// The grand run: one line of stands down the outside of the longest
-	// straight on the camera's far side, on round its turns as far as the
-	// view rule lets it. Open at the ends, roofed along, peaked in the middle.
+	// Stands down every other straight on the camera's far side: open at the
+	// ends, roofed along, peaked in the middle. Laid out with the tallest, so
+	// what's kept hides nothing.
 	const far = p.stretches
 		.filter( ( q ) => q.kind === 'straight' && q !== main && p.farSide( ( q.s0 + q.s1 ) / 2 ) === p.shape.outsideAt( ( q.s0 + q.s1 ) / 2 ) )
-		.sort( ( a, b ) => b.cells - a.cells )[ 0 ];
+		.sort( ( a, b ) => b.cells - a.cells );
 
-	let run = [];
+	for ( const q of far ) {
 
-	if ( far ) {
+		const run = standRow( p, q, p.shape.outsideAt( ( q.s0 + q.s1 ) / 2 ), 'racing/grandStandAwning', { ground: CONCRETE } );
 
-		const i = p.stretches.indexOf( far ), n = p.stretches.length;
-		const before = p.stretches[ ( i - 2 + n ) % n ], after = p.stretches[ ( i + 1 ) % n ];
-		const s0 = before.s0 - ( before.s0 > far.s0 ? length : 0 ), s1 = after.s1 + ( after.s1 < far.s1 ? length : 0 );
+		run.forEach( ( item, k ) => {
 
-		// Laid out with the tallest, so what's kept hides nothing
-		run = p.row( { s0, s1, side: p.shape.outsideAt( ( far.s0 + far.s1 ) / 2 ), back: LANE + 0.1, ground: CONCRETE, pieceAt: () => 'racing/grandStandAwning' } );
+			const t = ( k + 0.5 ) / run.length;
+			item.id = run.length < 4 ? 'racing/grandStandCovered' : t < 0.1 || t > 0.9 ? 'racing/grandStand' : t > 0.35 && t < 0.65 ? 'racing/grandStandAwning' : 'racing/grandStandCovered';
+			item.scale = scaleOf( item.id );
 
-	}
+		} );
 
-	run.forEach( ( item, k ) => {
+		// Banner towers at the ends of a long run
+		if ( run.length < 4 ) continue;
 
-		const t = ( k + 0.5 ) / run.length;
-		item.id = t < 0.1 || t > 0.9 ? 'racing/grandStand' : t > 0.35 && t < 0.65 ? 'racing/grandStandAwning' : 'racing/grandStandCovered';
-		item.scale = scaleOf( item.id );
+		for ( const [ item, next ] of [ [ run[ 0 ], run[ 1 ] ], [ run[ run.length - 1 ], run[ run.length - 2 ] ] ] ) {
 
-	} );
+			const d = Math.hypot( item.x - next.x, item.z - next.z );
+			const x = item.x + ( item.x - next.x ) / d * 3.8, z = item.z + ( item.z - next.z ) / d * 3.8;
+			const c = Math.cos( item.angle ) * 1.5, n = Math.sin( item.angle ) * 1.5;
+			p.add( 'racing/bannerTowerRed', x + n, z + c, item.angle );
+			p.add( 'racing/bannerTowerGreen', x - n, z - c, item.angle );
 
-	// Banner towers at the run's ends
-	for ( const [ item, next ] of [ [ run[ 0 ], run[ 1 ] ], [ run[ run.length - 1 ], run[ run.length - 2 ] ] ] ) {
-
-		if ( ! item || ! next ) continue;
-
-		const d = Math.hypot( item.x - next.x, item.z - next.z );
-		const x = item.x + ( item.x - next.x ) / d * 3.8, z = item.z + ( item.z - next.z ) / d * 3.8;
-		const c = Math.cos( item.angle ) * 1.5, n = Math.sin( item.angle ) * 1.5;
-		p.add( 'racing/bannerTowerRed', x + n, z + c, item.angle );
-		p.add( 'racing/bannerTowerGreen', x - n, z - c, item.angle );
+		}
 
 	}
 
-	// Light posts along the back of the pits, boards on the far chutes
+	// Light posts along the back of the pits, boards on the other straights
 	p.row( { s0: main.s0 + 4, s1: main.s1 - 4, side: pitSide, back: LANE + 6.6, gap: CELL * 1.5, ground: GRASS, pieceAt: () => 'racing/lightPostLarge' } );
 
 	for ( const q of p.stretches ) {
 
-		if ( q === main || q === far || q.kind !== 'straight' ) continue;
-		const mid = ( q.s0 + q.s1 ) / 2;
-		p.row( { s0: q.s0, s1: q.s1, side: p.shape.outsideAt( mid ), pieceAt: () => p.farSide( mid ) === p.shape.outsideAt( mid ) ? 'racing/billboard' : 'racing/barrierWall', gap: 0.2, ground: GRASS } );
+		if ( q === main || far.includes( q ) || q.kind !== 'straight' ) continue;
+		p.row( { s0: q.s0, s1: q.s1, side: p.shape.outsideAt( ( q.s0 + q.s1 ) / 2 ), gap: 0.2, ground: GRASS, pieceAt: () => 'racing/barrierWall' } );
 
 	}
 
@@ -570,12 +634,12 @@ function stadiumSites( p ) {
 
 }
 
-// Each straight of `least` cells or more bar the finish's, and its far side
+// Each straight of `least` cells or more, and its far side
 function frontages( p, visit, { least = 2 } = {} ) {
 
 	for ( const q of p.stretches ) {
 
-		if ( q.kind === 'straight' && q.cells >= least && q !== p.finish ) visit( q, p.farSide( ( q.s0 + q.s1 ) / 2 ) );
+		if ( q.kind === 'straight' && q.cells >= least ) visit( q, p.farSide( ( q.s0 + q.s1 ) / 2 ) );
 
 	}
 
@@ -584,8 +648,6 @@ function frontages( p, visit, { least = 2 } = {} ) {
 const COTTAGES = [ 'fantasy/house-cottage', 'fantasy/house-long', 'fantasy/house-tall', 'fantasy/house-cottage', 'fantasy/house-long-tall' ];
 
 function villageSites( p ) {
-
-	paddock( p );
 
 	// Terraces facing the road, a hedge along the camera's side with lanterns
 	frontages( p, ( q, side ) => {
@@ -624,8 +686,6 @@ const HOUSES = [ 'a', 'c', 'e', 'g', 'h', 'j', 'l', 'o', 'q', 's' ].map( ( l ) =
 
 function suburbSites( p ) {
 
-	paddock( p );
-
 	// Houses in a row with their fronts to the road, planters at the fronts,
 	// a fence along the backs of the plots and trees in the gardens; a fence
 	// along the road on the camera's side
@@ -647,7 +707,7 @@ function suburbSites( p ) {
 
 	};
 
-	for ( const q of p.stretches ) if ( q.kind === 'straight' && q !== p.finish ) street( q, p.farSide( ( q.s0 + q.s1 ) / 2 ) );
+	for ( const q of p.stretches ) if ( q.kind === 'straight' ) street( q, p.farSide( ( q.s0 + q.s1 ) / 2 ) );
 
 	frontages( p, ( q, side ) => {
 
@@ -663,8 +723,6 @@ const SHEDS = [ 'a', 'b', 'c', 'd', 'g', 'k', 'm', 'p', 'r', 's', 't' ].map( ( l
 const BOXES = [ 'a', 'b', 'c' ].map( ( l ) => 'industrial/shipping-container-' + l );
 
 function industrialSites( p ) {
-
-	paddock( p );
 
 	// A yard: a building on the road, containers in stacks beside it, a tank
 	const yard = ( s, side, k ) => {
@@ -719,8 +777,6 @@ function industrialSites( p ) {
 
 function forestSites( p ) {
 
-	paddock( p );
-
 	// A fence along the straights on the camera's side, clumps of trees with
 	// rocks and plants under them
 	frontages( p, ( q, side ) => {
@@ -739,7 +795,7 @@ function forestSites( p ) {
 // forest.
 export function planScenery( shape, track ) {
 
-	const theme = THEMES[ track.theme ] || THEMES.forest;
+	const theme = themeOf( track );
 	const p = new Planner( shape, theme );
 	const { plan } = p;
 
@@ -749,10 +805,14 @@ export function planScenery( shape, track ) {
 
 	} else {
 
+		// The crowd gets the best of the road, before anything else
+		const sited = shape.ordered || ( track.custom && track.theme );
+		if ( sited && p.loop ) mainStand( p );
+
 		if ( ! theme.landmarksLast ) landmarks( p );
 
 		// The sites along the road, then the hillside
-		if ( shape.ordered || ( track.custom && track.theme ) ) {
+		if ( sited ) {
 
 			if ( p.loop ) theme.sites( p );
 			hillside( p );

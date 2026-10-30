@@ -9,8 +9,9 @@ All measurements were taken on this machine: NVIDIA RTX 3060, 12 cores, headless
 | **1. Suzuka and Bathurst not drawing** | The bent road no longer makes zero-area triangles (`js/Bend.js`). All 6 tracks draw at low, medium and high, with no zero normals |
 | **1. The car bouncing and wiggling on hills** | The road is no longer a triangle mesh: each car rolls on its own flat tile laid under it every step (`RoadTile`, `js/Physics.js`) |
 | **2. Tall trees at Suzuka** | One scale across the kits (`js/SceneryCatalog.js`), and a view rule: nothing may hide the road from the chase camera, checked exactly when the scenery is planned |
-| **3. Indianapolis's stands** | One continuous run of grandstands, joined edge to edge and facing the road, down the back straight, round the turn and along the top chute |
+| **3. Indianapolis's stands** | One continuous run of grandstands, joined edge to edge and facing the road, down the back straight, and a second block on the top chute |
 | **4. Random placement** | The contact sheets (`npm run catalog`) and the catalog say what each model is. The planner now lays things out in sites per theme (`js/Scenery.js`) |
+| **Your follow-up: one look per track, stands to watch from** | Six themes for six tracks, each with its own ground, sky, trees and stands. The shared Racing Kit paddock is gone. Stands only stand on straights, right behind the wall and square on. See "After your feedback" |
 | **Feature: edit the scenery** | The editor's Scenery tool (key 4): select, drag, rotate, delete, place from a palette, undo and redo, on every built-in track. Your edits are saved in the browser and the link, and can be exported to the repo |
 
 ### 1. Rendering
@@ -80,22 +81,24 @@ The plan listed three fixes to try in order. The trace showed the real cause was
 
 | Theme | Sites |
 |---|---|
-| Stadium | the grand run, the pit row, the control tower at the line, barriers and low boards on the camera's side, banner towers at the run's ends, light posts, the fan zone, infield trees |
+| Stadium | stands down every far straight, the pit row, the control tower at the line, barriers and low boards on the camera's side, banner towers at the long run's ends, light posts, the fan zone, infield trees |
 | Industrial | yards (a shed with stacked containers and a tank), containers end to end on the camera's side, solar farms in a grid |
 | Village | terraces facing the road, hedges and lanterns on the camera's side, a market round a square, an orchard in rows |
 | Suburb | a row of houses with planters at the front, a fence along the back and trees in the gardens |
-| Forest | clumps of 3–7 trees with rocks and plants under them, a fence along the road |
+| Forest, Mountain | clumps of 3–7 trees with rocks and plants under them, a fence along the road |
+
+Every theme but the stadium also has its grandstand at the start line (see "After your feedback").
 
 **Item counts:**
 
 | Track | next_3 | Now |
 |---|---|---|
 | Classic | 4 | 4 |
-| Indianapolis | 49 | 57 (+16%) |
-| Monza | 59 | 68 (+15%) |
-| Monaco | 81 | 81 |
-| Suzuka | 106 | 121 (+14%) |
-| Bathurst | 120 | 116 |
+| Indianapolis | 49 | 54 (+10%) |
+| Monza | 59 | 72 (+22%) |
+| Monaco | 81 | 79 |
+| Suzuka | 106 | 125 (+18%) |
+| Bathurst | 120 | 120 |
 
 `npm run tracks` now also fails on anything that hides the road, and on a stand or pit more than 15° off facing the road.
 
@@ -109,6 +112,54 @@ The plan listed three fixes to try in order. The trace showed the real cause was
 - **Layouts:** 8 bytes an item, about 1.3 KB of link at 120 items. The game re-checks clearance on load and drops anything on the road.
 - **Export:** "Copy layout" gives `{ "scenery": "…" }`. Saved as `js/layouts/<track>.json`, it becomes that track's scenery for everyone.
 - **Custom tracks** get a theme picker, carried in the link as `&theme=`.
+
+## After your feedback
+
+You said one theme per track was meant to make every track different, not put the same pink stand on all of them, and that stands belong where people can watch the race. Both were my mistakes: next_3 kept a Racing Kit "paddock" at every start line, and plan_4 kept it. And the stand rows were allowed round corners.
+
+**What I measured first.** All four non-stadium tracks carried Racing Kit pieces, 52 of them on Suzuka. Every stand on Monaco and Suzuka stood on a corner, turned 12° or 53°, and Indianapolis's round stand was 5 m past the wall. All tracks shared the same green ground, grey sky and pine forest.
+
+**One look per track.** `THEMES` now has six themes for six tracks: Bathurst has its own `mountain`, and no longer shares `forest` with Classic.
+
+| Track | Theme | Ground | Sky | Trees | Stand |
+|---|---|---|---|---|---|
+| Classic | forest | Starter Kit green | grey | pines | none, as before |
+| Indianapolis | stadium | bright turf | clear blue | deep green | white and pink, open at the ends, roofed along, peaked in the middle |
+| Monza | village | olive meadow | warm cream | olive | purple and timber, with awnings |
+| Monaco | suburb | pale limestone | Riviera blue | cypress | white and sea blue, roofed |
+| Suzuka | industrial | grey | steel | dark cedars | steel and safety yellow, open |
+| Bathurst | mountain | dry gold | hot haze | gum green | timber bleachers, green benches |
+
+- **The shared paddock is gone:** pits and red-and-white barriers are Indianapolis's alone. Elsewhere the low props along the road are the theme's: hedges, fences, containers.
+- **Colours come from palettes,** so there's no new geometry: `npm run palettes` writes one per theme next to each kit's colormap. A stand is the same model with its 8 swatches swapped, 350 bytes a palette. The ground palette is 11 KB.
+- **Trees and ground** share one swatch in the Starter Kit, including the pines built into its corner tiles. So `Materials.paintTile` tints the pines by vertex colour (anything in that swatch over 1 kit unit is a tree; the ground's mounds stop at 0.7), on the flat tiles and on the bent road. No green is left beside Suzuka's grey ground.
+- **The backdrop** is the theme's: pines in its own leaves, sparser at Monaco and Suzuka.
+- **Custom tracks** get all of this when you pick a theme. Mountain is in the picker.
+
+**Stands to watch from** (`standRow`):
+- only on straights, never round a turn;
+- fronts 0.35–0.45 m behind the wall's outer face, square to the road;
+- in one block, joined edge to edge;
+- on the camera's far side, where you see their seats and they hide nothing;
+- at the start line first: every theme's stand is placed before anything else, centred on the line.
+
+The round stand is no longer placed by the planner, because it can't follow our corners: at the stands' scale its curve is 3.5 m in radius, and a corner's wall is 7.5 m. It's still in the editor's palette. The 45° chamfer I considered for corners is out too: you said no circles.
+
+`npm run tracks` now fails on a stand on a corner, more than 0.6 m behind the wall or over 2° off square, and on a theme or palette two tracks share.
+
+**Also changed:** Suzuka's trees were going to be maples until I saw them: an orange Racing Kit tree looks like a carrot. They're dark cedars. The stadium's corner landmarks are now boards, tents and banners instead of the gantry and the round stand.
+
+**Load** (`npm run perf:load`, cold, 3 runs, time to interactive): the ground palette starts downloading with the models.
+
+| Track | Average | Average + 4× CPU | Slow | Slow + 4× CPU |
+|---|---|---|---|---|
+| Monza | 0.61 s | 0.78 s | 0.83 s | 1.12 s |
+| Suzuka | 0.65 s | 1.26 s | 0.93 s | 1.59 s |
+| Bathurst | 0.58 s | 1.28 s | 0.92 s | 1.58 s |
+
+These are quicker than the table under Measurements, on the same code path, so most of that gap is this computer being less busy.
+
+**Playtests on this build:** `tiers`, `scenery`, `editor-scenery` (now with a themed custom track), `custom-tracks`, `flyover`, `cliff`, `podium`, `rotate-mid-race` and `offline-file` all pass. The driving and race scenarios weren't re-run: the physics didn't change.
 
 ## Changes from the plan
 
@@ -187,7 +238,8 @@ On the final build:
 1. **Drive Bathurst's mountain.** The ride numbers are good, but the test is your hands. If it still wiggles, tell me where, and whether it's steering or the body.
 2. **Crests:** the launches went with the bug. If you miss them, I can make some crests sharper. Suzuka's and Bathurst's profiles are in `js/Tracks.js`.
 3. **Indianapolis:** D6's layout puts the main stands on the back straight. The front straight stays low because it's on the camera's side.
-4. **First races on the hill tracks:** `par` and `ace` were scaled, not measured. Races are also 10% shorter now: about 50 s on Suzuka and 45 s on Bathurst. If that's too short, each could go up to 3 laps.
+4. **The look of each track:** the colours are mine (`grass`, `leaf`, `sky` in `THEMES`, the stands' in `scripts/palettes.mjs`). Tell me any you'd change.
+5. **First races on the hill tracks:** `par` and `ace` were scaled, not measured. Races are also 10% shorter now: about 50 s on Suzuka and 45 s on Bathurst. If that's too short, each could go up to 3 laps.
 
 ## Not done / known issues
 
@@ -201,6 +253,6 @@ On the final build:
 ## Next
 
 1. **Drive the hill tracks,** on this computer and the other one.
-2. **Review the stills:** `npm run playtest -- --scenario scenery`, then Indianapolis first.
+2. **Look at each track:** does each feel like its own place, and are the stands where you'd want them?
 3. **Thumbnails in the palette,** if you use it a lot.
 4. **Ghost kicks on the terrain,** if a car on Bathurst's gravel run-off feels rough.

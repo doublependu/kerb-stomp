@@ -17,6 +17,7 @@
     "bench": "node scripts/bench.mjs",
     "tracks": "node scripts/check-tracks.mjs",
     "catalog": "node scripts/catalog.mjs",
+    "palettes": "node scripts/palettes.mjs",
     "sim": "node scripts/sim/race.mjs"
   },
   "dependencies": {

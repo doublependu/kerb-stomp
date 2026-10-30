@@ -120,7 +120,7 @@ const DECO_CELLS = [
 // skip decoration tiles where the hillside would leave them floating.
 // reserved: cells (keys 'x,z') the scenery has planned for (Scenery.js),
 // left without a decoration tile.
-export function buildTrack( scene, models, customCells, { chunk = DECO_CHUNK, shape = null, bent = null, reserved = new Map(), tents = true } = {} ) {
+export function buildTrack( scene, models, customCells, { chunk = DECO_CHUNK, shape = null, bent = null, reserved = new Map(), tents = true, backdrop = 'forest' } = {} ) {
 
 	const trackGroup = new THREE.Group();
 	trackGroup.position.y = -0.5;
@@ -234,7 +234,7 @@ export function buildTrack( scene, models, customCells, { chunk = DECO_CHUNK, sh
 
 				} else {
 
-					forestPositions.push( x, z, 0 );
+					( backdrop === 'forest' ? forestPositions : emptyPositions ).push( x, z, 0 );
 
 				}
 
