@@ -9,6 +9,7 @@ const _probe = new THREE.PerspectiveCamera();
 
 const BASE_FOV = 40;
 const MAX_FOV = 60;
+export const BASE_NEAR = 0.1;
 const BASE_FAR = 60;
 
 // Narrowest ground half-width (world units) the view may show across the
@@ -20,7 +21,7 @@ export class Camera {
 
 	constructor() {
 
-		this.camera = new THREE.PerspectiveCamera( BASE_FOV, window.innerWidth / window.innerHeight, 0.1, BASE_FAR );
+		this.camera = new THREE.PerspectiveCamera( BASE_FOV, window.innerWidth / window.innerHeight, BASE_NEAR, BASE_FAR );
 
 		// Matches Godot View: 45° azimuth, 35° elevation, distance 16
 		this.offset = new THREE.Vector3( 9.27, 9.18, 9.27 );

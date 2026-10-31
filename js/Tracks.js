@@ -27,6 +27,10 @@
 // cell ranges of gravel road with no wall on the outside of the loop.
 // Suzuka's back straight bridges its Degner–Hairpin link: the one place two
 // passes share a cell (TrackPath.checkLayout).
+//
+// ramps: cells whose centre is a lip cars take off from (TakeOff.js): a crest
+// with a straight after it, the longer the longer a flight can be. Suzuka's
+// jumps its own crossing; Bathurst's kicks up near the top of Conrod Straight.
 
 import { TRACK_CELLS, decodeCells } from './Track.js';
 import { layoutCells, centerline } from './TrackPath.js';
@@ -85,12 +89,13 @@ export const TRACKS = [
 		name: 'Suzuka',
 		inspiredBy: 'Suzuka: the S-curves, Degner, the Hairpin, Spoon, 130R and the figure-8 crossover',
 		laps: 2,
-		par: 36.2,
-		ai: [ 41.58, 34.13, 28.88, 22.15, 19.93 ],
-		ace: 24,
+		par: 36.5,
+		ai: [ 37.97, 32.83, 25.37, 21.18, 20.08 ],
+		ace: 24.2,
 		//       F  S  T1 S  T2 S-curves     Dunlop Degner 1        Degner 2  under the bridge  Hairpin   200R Spoon         back straight, over the bridge     130R chicane  last  S  S
 		layout: 'S  S  R  S  R  L  R  S  S  S  L      R      S  S  S  R        S  S  S  S        L  S  L   R  S  L  S  L   S  S  S  S  S  S  L    R  L     R     S  S',
-		heights: [ 0, 0, 0, 0, 0, 0.4, 0.9, 1.3, 1.5, 1.5, 1.3, 0.9, 0.5, 0.2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.3, 0.6, 0.6, 0.6, 1.1, 1.9, 2.8, 3.5, 4.0, 2.6, 1.6, 0.7, 0.1, 0, 0, 0 ],
+		heights: [ 0, 0, 0, 0, 0, 0.4, 0.9, 1.3, 1.5, 1.5, 1.3, 0.9, 0.5, 0.2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.3, 0.6, 0.6, 0.6, 1.3, 2.6, 3.9, 3.5, 3.0, 2.1, 1.4, 0.7, 0.1, 0, 0, 0 ],
+		ramps: [ 30 ],
 		heading: 'E',
 		theme: 'industrial',
 	},
@@ -99,12 +104,13 @@ export const TRACKS = [
 		name: 'Bathurst',
 		inspiredBy: 'Mount Panorama, Bathurst: up the Mountain Straight and The Cutting, across the top past Skyline, down the Esses and the Dipper, and Conrod Straight',
 		laps: 2,
-		par: 30.2,
-		ai: [ 40.45, 32.63, 25.47, 20.15, 18.03 ],
-		ace: 22,
+		par: 29.5,
+		ai: [ 34.33, 25.9, 21.48, 19.02, 17.6 ],
+		ace: 21.5,
 		//       F  S  Hell Mountain Straight  Griffins Cutting S  Reid Sulman McPhillamy Skyline S  Esses     Dipper S  Forrest  Conrod Straight          Chase Murray's S  S
 		layout: 'S  S  L    S   S   S   S      R        L       S  L    R      L          R       S  L  R      L      S  L        S  S  S  S  S  S  S  S  R  L  S  L        S  S',
-		heights: [ 0, 0, 0, 0.5, 1, 1.7, 2.4, 3, 3.8, 4.6, 5.2, 5.6, 5.9, 6, 6, 5, 4.2, 3.6, 3.2, 3, 2.8, 2.2, 1, 2.2, 0.8, 0.3, 0.1, 0, 0, 0, 0, 0, 0, 0 ],
+		heights: [ 0, 0, 0, 0.5, 1, 1.7, 2.4, 3, 3.8, 4.6, 5.2, 5.6, 5.9, 6, 6, 5, 4.2, 3.6, 3.2, 3, 2.2, 3.4, 2.4, 1.6, 1.0, 0.5, 0.2, 0, 0, 0, 0, 0, 0, 0 ],
+		ramps: [ 21 ],
 		unsealed: [ [ 12, 14 ] ],
 		heading: 'E',
 		theme: 'mountain',

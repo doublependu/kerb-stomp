@@ -254,7 +254,7 @@ export class AIDriver {
 		const rate = turn + STEER.yaw * wrapAngle( travel + slip - heading );
 
 		// As a share of what the car can turn at (Vehicle: 4 rad/s at speed)
-		const reach = 4 * Math.max( 0.2, Math.min( 1, Math.abs( v.linearSpeed ) ) ) * ( v.grounded ? 1 : 0.3 );
+		const reach = 4 * Math.max( 0.2, Math.min( 1, Math.abs( v.linearSpeed ) ) );
 		this.noise += ( ( this.random() - 0.5 ) * 2 * p.noise - this.noise ) * ( 1 - Math.exp( - dt * 4 ) );
 		const command = Math.max( - 1, Math.min( 1, rate / reach + this.noise ) );
 		this.steer += ( command - this.steer ) * ( 1 - Math.exp( - dt / p.lag ) );

@@ -12,6 +12,7 @@ const _quat = new THREE.Quaternion();
 const _up = new THREE.Vector3( 0, 1, 0 );
 
 const LINEAR_DAMP = 0.1;
+const SPHERE_RADIUS = 0.5;
 export const MAX_SPEED = 1.5;
 
 // Handling by mass (CarList.js, the yellow truck = 1 drives as the game
@@ -88,6 +89,10 @@ export class Vehicle {
 		this.wasGrounded = true;
 		this.landing = 0; // vertical speed of the last landing, for effects
 
+		// Off a ramp, from the lip till it lands (TakeOff.js), even within the
+		// few cm of the road that still count as grounded
+		this.flying = false;
+
 		// Where a fall off the world puts the truck back, unless onFall
 		// handles it (races put the car back where it left the track)
 		this.spawnPosition = [ 3.5, 0.5, 5 ];
@@ -158,10 +163,13 @@ export class Vehicle {
 
 	update( dt, controlsInput ) {
 
-		// No driving while flying end over end or lying on the roof
+		// No driving while flying end over end or lying on the roof. In the
+		// air nothing answers either, but the car keeps its nose and its speed
 		const helpless = this.tumbling || this.flipped;
-		this.inputX = helpless ? 0 : controlsInput.x;
-		this.inputZ = helpless ? 0 : controlsInput.z;
+		const airborne = ! helpless && ( this.flying || ! this.grounded );
+		const noInput = helpless || airborne;
+		this.inputX = noInput ? 0 : controlsInput.x;
+		this.inputZ = noInput ? 0 : controlsInput.z;
 
 		if ( this.controlLoss > 0 ) {
 
@@ -172,7 +180,11 @@ export class Vehicle {
 
 		const throttle = Math.hypot( this.inputX, this.inputZ );
 
-		if ( controlsInput.mode === 'world' && throttle > 0 ) {
+		if ( airborne ) {
+
+			this.angularSpeed = 0;
+
+		} else if ( controlsInput.mode === 'world' && throttle > 0 ) {
 
 			// Touch joystick: (x, z) is a world-space direction to head in,
 			// and its length (0–1) how fast to go
@@ -203,8 +215,7 @@ export class Vehicle {
 
 			const steeringGrip = THREE.MathUtils.clamp( Math.abs( this.linearSpeed ), 0.2, 1.0 );
 
-			// Barely any steering in the air
-			const targetAngular = - this.inputX * steeringGrip * 4 * direction * ( this.grounded ? 1 : 0.3 );
+			const targetAngular = - this.inputX * steeringGrip * 4 * direction;
 			this.angularSpeed = THREE.MathUtils.lerp( this.angularSpeed, targetAngular, dt * 4 );
 
 			this.container.rotateY( this.angularSpeed * dt );
@@ -262,7 +273,7 @@ export class Vehicle {
 		if ( _tmpVec.y > 0.5 && ! this.tumbling ) {
 
 			// Sit on the slope; in the air, hold the nose along the flight path
-			if ( this.grounded ) {
+			if ( this.grounded && ! this.flying ) {
 
 				const targetQuat = this.alignWithY( this.container.quaternion, this.groundNormal );
 				this.container.quaternion.slerp( targetQuat, 1 - Math.pow( 0.8, dt * 60 ) );
@@ -282,9 +293,16 @@ export class Vehicle {
 
 		}
 
-		this.linearSpeed *= Math.max( 0, 1 - LINEAR_DAMP * dt );
+		if ( ! airborne ) this.linearSpeed *= Math.max( 0, 1 - LINEAR_DAMP * dt );
 
-		if ( this.rigidBody && this.grounded ) {
+		if ( this.rigidBody && airborne ) {
+
+			// Rolling at its speed: spin dies away fast in the air (the sphere's
+			// angular damping), and a stopped wheel lands a third slower
+			const velocity = this.rigidBody.motionProperties.linearVelocity;
+			rigidBody.setAngularVelocity( this.physicsWorld, this.rigidBody, [ velocity[ 2 ] / SPHERE_RADIUS, 0, - velocity[ 0 ] / SPHERE_RADIUS ] );
+
+		} else if ( this.rigidBody && this.grounded ) {
 
 			_forward.set( 0, 0, 1 ).applyQuaternion( this.container.quaternion );
 			_forward.y = 0;

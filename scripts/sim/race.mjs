@@ -10,6 +10,7 @@
 //   npm run sim -- --steer --gain 2,3          steering gains for the best NPC (AIDriver.STEER), over a grid
 //   npm run sim -- --optimize --tracks monza   the fastest racing line per track (writes js/RaceLines.js)
 //   npm run sim -- --ride                      how smooth the ride is: bounce and wiggle, on flat road and slopes
+//   npm run sim -- --air                       the ramps' flights: airtime, height, landing, per skill
 
 import * as THREE from 'three';
 import { STEP } from '../../js/Race.js';
@@ -111,6 +112,91 @@ class WallRider extends AIDriver {
 		} ) );
 
 	}
+
+}
+
+// The ramps' flights, per skill: the speed over the lip, the airtime against
+// the plan, how far it flew, how high over the lip, the road left to the
+// corner, the sideways drift, its speed a quarter of a second after landing against the
+// take-off, and wand trips
+if ( args.includes( '--air' ) ) {
+
+	const laps = Number( arg( 'laps', 4 ) );
+	const seeds = Number( arg( 'seeds', 3 ) );
+	const range = ( values, digits = 1 ) => values.length ? `${ Math.min( ...values ).toFixed( digits ) }–${ Math.max( ...values ).toFixed( digits ) }` : '–';
+
+	for ( const track of tracks.filter( ( t ) => t.ramps ) ) {
+
+		console.log( `\n${ track.name }` );
+
+		for ( const skill of [ 1, 0.75, 0.5, 0.25, 0.1 ] ) {
+
+			const flights = [];
+			let wand = 0, rolled = 0;
+
+			for ( let seed = 1; seed <= seeds; seed ++ ) {
+
+				const race = makeRace( track );
+				const car = race.addCar( CARS[ 0 ], stubModel(), { driver: new AIDriver( race.line, { skill, seed } ) } );
+				const ramp = race.shape.ramps[ 0 ];
+				race.setup( 'race', race.cars, 99 );
+				race.start();
+
+				const input = { x: 0, z: 0, mode: 'car' };
+				let open = null, after = null, prevS = car.proj.s;
+
+				for ( let i = 0; i < 120 / STEP && car.lapTimes.length < laps; i ++ ) {
+
+					race.step( input );
+					const v = car.vehicle, s = car.proj.s;
+					const speed = Math.hypot( v.sphereVel.x, v.sphereVel.z );
+
+					if ( car.flight && ! open ) {
+
+						open = { speed: car.flight.speed, planned: car.flight.planned, s, lateral: car.proj.lateral, y: v.spherePos.y, top: 0 };
+
+					} else if ( ! car.flight && ! open && prevS < ramp.s && s >= ramp.s ) {
+
+						rolled ++;
+
+					}
+
+					if ( open && car.flight ) {
+
+						open.top = Math.max( open.top, v.spherePos.y - open.y );
+						open.time = car.flight.time;
+
+					} else if ( open ) {
+
+						flights.push( Object.assign( open, { flew: s - open.s, left: ramp.s + ramp.ahead - s, drift: Math.abs( car.proj.lateral - open.lateral ) } ) );
+						after = { flight: open, steps: 0 };
+						open = null;
+
+					}
+
+					if ( after && ++ after.steps === 15 ) {
+
+						after.flight.later = speed;
+						after = null;
+
+					}
+
+					prevS = s;
+
+				}
+
+				wand += car.respawns;
+
+			}
+
+			const off = flights.map( ( f ) => Math.abs( f.time - f.planned ) );
+			console.log( `  skill ${ skill.toFixed( 2 ).padEnd( 4 ) } ${ String( flights.length ).padStart( 2 ) } flights, ${ String( rolled ).padStart( 2 ) } rolled over, wand ${ wand }: ${ range( flights.map( ( f ) => f.speed ) ) } m/s, ${ range( flights.map( ( f ) => f.time ), 2 ) } s (off plan by up to ${ range( off, 2 ).split( '–' )[ 1 ] || '–' }), ${ range( flights.map( ( f ) => f.flew ) ) } m, ${ range( flights.map( ( f ) => f.top ) ) } m over the lip, ${ range( flights.map( ( f ) => f.left ) ) } m of road left, drift ${ range( flights.map( ( f ) => f.drift ) ) } m, speed ¼ s after landing ${ range( flights.filter( ( f ) => f.later ).map( ( f ) => f.later / f.speed * 100 ), 0 ) }%` );
+
+		}
+
+	}
+
+	process.exit( 0 );
 
 }
 
@@ -437,7 +523,9 @@ if ( args.includes( '--optimize' ) ) {
 		const candidate = ( offsets, caps = null ) => ( { offsets: offsets.map( ( o, j ) => Math.max( lo[ j ], Math.min( hi[ j ], o ) ) ), caps: caps || new Array( k ).fill( 0 ) } );
 		const sample = ( offsets ) => Array.from( { length: k }, ( _, j ) => offsets[ index( j ) ] );
 		const starts = [ candidate( sample( racing.smoothLine() ) ), candidate( new Array( k ).fill( 0 ) ) ];
-		if ( racing.optimized && ! args.includes( '--fresh' ) ) starts.unshift( candidate( saved[ track.id ].offsets.map( ( o ) => o / 100 ), saved[ track.id ].caps ) );
+
+		// A line saved for other heights on the same layout still starts close
+		if ( saved[ track.id ]?.offsets.length === k && ! args.includes( '--fresh' ) ) starts.unshift( candidate( saved[ track.id ].offsets.map( ( o ) => o / 100 ), saved[ track.id ].caps ) );
 
 		let parent = null, best = { score: Infinity };
 

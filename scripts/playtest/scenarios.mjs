@@ -52,7 +52,7 @@ async function presetStorage( context, prefs ) {
 
 }
 
-async function open( env, contextOptions, { query = '', video = env.record, label, prefs = {} } ) {
+async function open( env, contextOptions, { query = '', video = env.record, label, prefs = {}, init = null } ) {
 
 	const context = await env.browser.newContext( {
 		...contextOptions,
@@ -60,6 +60,7 @@ async function open( env, contextOptions, { query = '', video = env.record, labe
 	} );
 
 	await presetStorage( context, settings( prefs ) );
+	if ( init ) await context.addInitScript( init );
 
 	const page = await context.newPage();
 	const errors = [];
@@ -96,6 +97,177 @@ async function trackLine( page ) {
 }
 
 const DRIVERS = { keyboard: KeyboardDriver, touch: TouchDriver, pads: PadsDriver };
+
+// The fly-over's picture, frame by frame. Its clock runs SLOW times slower,
+// a fixed step a frame (the game's timer goes by requestAnimationFrame's
+// timestamps), so features barely move between frames, a busy computer
+// can't jerk them, and what changes and changes back is flicker, not motion.
+// A flash: over 0.4% of the pixels doing that, and 3× the frames
+// around it. The hand-over: the share of pixels the first chase frame changes.
+const SLOW = 6;
+
+function slowClock( slow ) {
+
+	const raf = window.requestAnimationFrame.bind( window );
+	let clock = 0, last = null;
+	window.__clockRate = 1;
+
+	window.requestAnimationFrame = ( callback ) => raf( ( t ) => {
+
+		// Once a frame, however many callbacks it has
+		if ( t !== last ) clock += 1000 / 60 * window.__clockRate;
+		last = t;
+		callback( clock );
+
+	} );
+
+	window.__slow = 1 / slow;
+
+}
+
+function watchPicture() {
+
+	const k = window.__kerb, { renderer, scene } = k.three;
+	const gl = renderer.getContext();
+	const render = renderer.render.bind( renderer );
+	const T = 10;
+	const probe = window.__picture = { log: [], handover: null, before: [], done: false };
+	let a = null, b = null, pixels = null, flying = false;
+
+	const read = () => {
+
+		const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+		pixels = pixels || new Uint8Array( w * h * 4 );
+		gl.readPixels( 0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels );
+		const luma = new Int16Array( w * h );
+		for ( let i = 0; i < luma.length; i ++ ) luma[ i ] = ( pixels[ i * 4 ] * 77 + pixels[ i * 4 + 1 ] * 151 + pixels[ i * 4 + 2 ] * 28 ) >> 8;
+		return luma;
+
+	};
+
+	const changed = ( p, q ) => {
+
+		let count = 0;
+		for ( let i = 0; i < p.length; i ++ ) if ( Math.abs( p[ i ] - q[ i ] ) > 8 ) count ++;
+		return count / p.length;
+
+	};
+
+	renderer.render = ( s, c ) => {
+
+		// The bloom's own passes come through here too
+		if ( s !== scene || probe.done ) return render( s, c );
+
+		const f = k.flyover();
+		if ( f ) window.__clockRate = window.__slow;
+		render( s, c );
+
+		if ( f ) {
+
+			flying = true;
+			const c0 = read();
+
+			if ( a && b ) {
+
+				let count = 0;
+
+				for ( let i = 0; i < c0.length; i ++ ) {
+
+					const d1 = b[ i ] - a[ i ], d2 = c0[ i ] - b[ i ];
+					if ( ( d1 > T && d2 < - T ) || ( d1 < - T && d2 > T ) ) count ++;
+
+				}
+
+				probe.log.push( [ f.t, count / c0.length ] );
+
+			}
+
+			if ( b ) probe.before.push( changed( b, c0 ) );
+			a = b;
+			b = c0;
+
+		} else if ( flying ) {
+
+			probe.handover = changed( b, read() );
+			probe.done = true;
+			window.__clockRate = 1;
+
+		}
+
+	};
+
+}
+
+// The player's car in a straight line for the ramp's lip, `distance` m short
+// of it at `speed` m/s, rolling
+function aimAtRamp( { distance, speed } ) {
+
+	const race = window.__kerb.race, car = race.player, line = race.line;
+	const s = race.shape.ramps[ 0 ].s - distance, p = line.pointAt( s ), dir = line.directionAt( s );
+
+	race.place( car, [ p[ 0 ], 0.55 + line.heightAt( s ), p[ 1 ] ], dir );
+	car.counter.running = true;
+	car.vehicle.linearSpeed = speed / 10;
+
+	const motion = car.vehicle.rigidBody.motionProperties;
+	motion.linearVelocity[ 0 ] = Math.sin( dir ) * speed;
+	motion.linearVelocity[ 2 ] = Math.cos( dir ) * speed;
+	motion.angularVelocity[ 0 ] = Math.cos( dir ) * speed * 2;
+	motion.angularVelocity[ 2 ] = - Math.sin( dir ) * speed * 2;
+
+	return dir;
+
+}
+
+// A flight from the page's side, from now till it lands: how far the nose
+// turned, how much speed it lost, how long it was up
+function watchFlight() {
+
+	return new Promise( ( resolve ) => {
+
+		const k = window.__kerb, first = k.state();
+		let turned = 0, lost = 0, airtime = 0;
+
+		const tick = () => {
+
+			const s = k.state();
+			if ( ! s.flying ) return resolve( { turned, lost, airtime, speed: first.speed, heading: s.heading } );
+
+			const d = s.heading - first.heading;
+			turned = Math.max( turned, Math.abs( Math.atan2( Math.sin( d ), Math.cos( d ) ) ) );
+			lost = Math.max( lost, first.speed - s.speed );
+			airtime = s.airtime;
+			requestAnimationFrame( tick );
+
+		};
+
+		tick();
+
+	} );
+
+}
+
+function turnedSince( heading, now ) {
+
+	return Math.abs( Math.atan2( Math.sin( now - heading ), Math.cos( now - heading ) ) );
+
+}
+
+function flashes( log ) {
+
+	const median = ( values ) => values.slice().sort( ( p, q ) => p - q )[ values.length >> 1 ];
+	const found = [];
+
+	log.forEach( ( [ t, share ], i ) => {
+
+		if ( i < 6 || i >= log.length - 6 ) return;
+		if ( share > 0.004 && share > 3 * median( log.slice( i - 6, i + 7 ).map( ( e ) => e[ 1 ] ) ) ) found.push( { t, share } );
+
+	} );
+
+	return found;
+
+}
 
 async function driveRuns( env, name, contextOptions, { input, skills, laps, query = '' } ) {
 
@@ -647,6 +819,132 @@ export const SCENARIOS = {
 			check( checks, `flyover ${ device }: lands on the chase camera behind the player`, Math.abs( s.ndc[ 0 ] ) < 0.3 && Math.abs( s.ndc[ 1 ] ) < 0.4 && s.far < 200, `player at ${ s.ndc.map( ( v ) => v.toFixed( 2 ) ) } on screen, far ${ s.far.toFixed( 0 ) }` );
 			check( checks, `flyover ${ device }: no quality step-down`, s.tier === before, `${ before } → ${ s.tier }` );
 			check( checks, `flyover ${ device }: no page errors`, errors.length === 0, errors.slice( 0, 2 ).join( ' | ' ) );
+			await close();
+
+		}
+
+		return { checks, runs: [] };
+
+	},
+
+	// Nothing flashes in the fly-over and nothing jumps when it hands over to
+	// the chase camera, on any track, at both ends of the quality range
+	'flicker': async ( env ) => {
+
+		const checks = [];
+
+		for ( const tier of env.tier ? [ env.tier ] : [ 'low', 'high' ] ) {
+
+			for ( const track of BUILT_IN.filter( ( t ) => ! env.tracks || env.tracks.includes( t.id ) ) ) {
+
+				const { page, errors, close } = await open( env, LAPTOP, { query: `&track=${ track.id }&quality=${ tier }`, label: `flicker-${ track.id }-${ tier }`, video: false, prefs: { npcs: 3 }, init: `(${ slowClock })( ${ SLOW } )` } );
+				await page.waitForFunction( () => window.__kerb.sceneryLoaded() && document.getElementById( 'start-btn' ).textContent !== 'Getting ready…', null, { timeout: 30000 } );
+				await page.evaluate( watchPicture );
+				await page.click( '#start-btn' );
+				await page.waitForFunction( () => window.__picture.done, null, { timeout: 120000 } );
+
+				const { log, handover, before } = await page.evaluate( () => window.__picture );
+				const found = flashes( log );
+				const worst = found.length ? Math.max( ...found.map( ( f ) => f.share ) ) : 0;
+				const lastFrames = Math.max( ...before.slice( - 8 ) );
+
+				check( checks, `flicker ${ track.id } ${ tier }: no flash frames`, found.length === 0, `${ found.length } in ${ log.length } frames, worst ${ ( worst * 100 ).toFixed( 2 ) }%${ found.length ? ' at ' + found.slice( 0, 4 ).map( ( f ) => f.t.toFixed( 2 ) ).join( ' ' ) : '' }` );
+				check( checks, `flicker ${ track.id } ${ tier }: no jump at the hand-over`, handover < 0.01, `${ ( handover * 100 ).toFixed( 2 ) }% of pixels, ${ ( lastFrames * 100 ).toFixed( 2 ) }% just before` );
+				check( checks, `flicker ${ track.id } ${ tier }: no page errors`, errors.length === 0, errors.slice( 0, 2 ).join( ' | ' ) );
+				await close();
+
+			}
+
+		}
+
+		return { checks, runs: [] };
+
+	},
+
+	// Off Bathurst's ramp with the controls held over in the air: nothing
+	// changes where the car is going, it flies 1–3 s, the controls come back
+	// when it lands, on keys and the touch joystick; and a slow car rolls over
+	'takeoff': async ( env ) => {
+
+		const checks = [];
+		const flying = () => window.__kerb.state().flying;
+
+		{
+
+			const { page, errors, close } = await open( env, LAPTOP, { query: '&track=bathurst', label: 'takeoff-keys' } );
+			await page.keyboard.press( 'Enter' );
+			await page.waitForTimeout( 500 );
+
+			await page.keyboard.down( 'KeyW' );
+			await page.evaluate( aimAtRamp, { distance: 9, speed: 12.8 } );
+			await page.waitForFunction( flying, null, { timeout: 5000, polling: 'raf' } );
+
+			const watching = page.evaluate( watchFlight );
+			await page.keyboard.up( 'KeyW' );
+			await page.keyboard.down( 'KeyA' );
+			await page.keyboard.down( 'KeyS' );
+			await page.waitForTimeout( 900 );
+			await env.screenshot( page, 'takeoff-in-the-air' );
+			const flight = await watching;
+
+			check( checks, 'takeoff keys: 1–3 s in the air', flight.airtime >= 1 && flight.airtime <= 3.1, `${ flight.airtime.toFixed( 2 ) } s from ${ flight.speed.toFixed( 1 ) } m/s` );
+			check( checks, 'takeoff keys: steering does nothing in the air', flight.turned < 0.02, `nose turned ${ flight.turned.toFixed( 3 ) } rad` );
+			check( checks, 'takeoff keys: brakes do nothing in the air', flight.lost < 0.15, `lost ${ flight.lost.toFixed( 2 ) } m/s` );
+
+			await page.waitForTimeout( 400 );
+			const after = await page.evaluate( () => window.__kerb.state() );
+			check( checks, 'takeoff keys: the same keys work again on landing', turnedSince( flight.heading, after.heading ) > 0.2 && after.speed < flight.speed - 2, `nose turned ${ turnedSince( flight.heading, after.heading ).toFixed( 2 ) } rad, speed ${ flight.speed.toFixed( 1 ) } → ${ after.speed.toFixed( 1 ) } m/s` );
+
+			await page.keyboard.up( 'KeyA' );
+			await page.keyboard.up( 'KeyS' );
+			await page.evaluate( aimAtRamp, { distance: 3, speed: 7 } );
+			const slow = await page.evaluate( () => new Promise( ( resolve ) => {
+
+				const k = window.__kerb, car = k.race.player, ramp = k.race.shape.ramps[ 0 ];
+
+				const tick = () => {
+
+					if ( k.state().flying ) resolve( 'flew' );
+					else if ( car.proj.s > ramp.s + 3 ) resolve( 'rolled over' );
+					else requestAnimationFrame( tick );
+
+				};
+
+				tick();
+
+			} ) );
+			check( checks, 'takeoff keys: a slow car rolls over the ramp', slow === 'rolled over', slow );
+			check( checks, 'takeoff keys: no page errors', errors.length === 0, errors.slice( 0, 2 ).join( ' | ' ) );
+			await close();
+
+		}
+
+		{
+
+			const { page, errors, close } = await open( env, PHONE_LANDSCAPE, { query: '&track=bathurst', label: 'takeoff-touch', prefs: { touch: 'joystick' } } );
+			const driver = new TouchDriver( page, await trackLine( page ), { skill: 'expert' } );
+			await driver.start();
+			await page.waitForTimeout( 500 );
+
+			// The thumb up the road: the 45° camera's mapping, as TouchDriver
+			const dir = await page.evaluate( aimAtRamp, { distance: 9, speed: 12.8 } );
+			const wx = Math.sin( dir ), wz = Math.cos( dir );
+			await driver.touch( 'touchMove', driver.anchor[ 0 ] + ( wx - wz ) * Math.SQRT1_2 * 66, driver.anchor[ 1 ] + ( wx + wz ) * Math.SQRT1_2 * 66 );
+			await page.waitForFunction( flying, null, { timeout: 5000, polling: 'raf' } );
+
+			// Then hard across it, which turns a car on the ground at once
+			const watching = page.evaluate( watchFlight );
+			await driver.touch( 'touchMove', driver.anchor[ 0 ] + ( wx + wz ) * Math.SQRT1_2 * 66, driver.anchor[ 1 ] + ( wz - wx ) * Math.SQRT1_2 * 66 );
+			const flight = await watching;
+
+			check( checks, 'takeoff touch: 1–3 s in the air', flight.airtime >= 1 && flight.airtime <= 3.1, `${ flight.airtime.toFixed( 2 ) } s from ${ flight.speed.toFixed( 1 ) } m/s` );
+			check( checks, 'takeoff touch: the joystick does nothing in the air', flight.turned < 0.02 && flight.lost < 0.15, `nose turned ${ flight.turned.toFixed( 3 ) } rad, lost ${ flight.lost.toFixed( 2 ) } m/s` );
+
+			await page.waitForTimeout( 500 );
+			const after = await page.evaluate( () => window.__kerb.state() );
+			check( checks, 'takeoff touch: the joystick works again on landing', turnedSince( flight.heading, after.heading ) > 0.2, `nose turned ${ turnedSince( flight.heading, after.heading ).toFixed( 2 ) } rad` );
+			check( checks, 'takeoff touch: no page errors', errors.length === 0, errors.slice( 0, 2 ).join( ' | ' ) );
+			await driver.release();
 			await close();
 
 		}

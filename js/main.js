@@ -3,7 +3,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { LightProbeGrid } from 'three/addons/lighting/LightProbeGrid.js';
 import { registerAll } from 'crashcat';
 import { MAX_SPEED } from './Vehicle.js';
-import { Camera } from './Camera.js';
+import { Camera, BASE_NEAR } from './Camera.js';
 import { Controls } from './Controls.js';
 import { buildTrack, computeTrackBounds } from './Track.js';
 import { resolveTrack, rememberTrack, trackLine } from './Tracks.js';
@@ -598,6 +598,7 @@ async function init() {
 	const _chasePosition = new THREE.Vector3();
 	const _chaseLook = new THREE.Vector3();
 	const _flyLook = new THREE.Vector3();
+	const _sunLook = new THREE.Vector3();
 
 	function snapCamera() {
 
@@ -681,6 +682,7 @@ async function init() {
 	// horizon, shadows all over
 	function flyoverView() {
 
+		flyover.fit();
 		flyover.fog( scene.fog, cam.camera.position );
 		cam.camera.far = 2000;
 		cam.camera.updateProjectionMatrix();
@@ -694,6 +696,7 @@ async function init() {
 		flyover = null;
 		horizon.visible = false;
 		delete document.body.dataset.flyover;
+		cam.camera.near = BASE_NEAR;
 		viewWidth = 0;
 		resize(); // the chase camera's fog and far plane again
 		frameMonitor.reset();
@@ -980,6 +983,8 @@ async function init() {
 			_chaseLook.copy( cam.lookPoint );
 			flyover.pose( flyover.t, _chasePosition, _chaseLook, cam.camera.position, _flyLook );
 			cam.camera.lookAt( _flyLook );
+			cam.camera.near = flyover.near( cam.camera.position.y );
+			cam.camera.updateProjectionMatrix();
 			flyover.fog( scene.fog, cam.camera.position );
 			if ( flyover.done ) endFlyover();
 
@@ -994,7 +999,19 @@ async function init() {
 
 		}
 
-		sun.update( flyover ? flyover.centre : cam.lookPoint );
+		const landing = flyover ? flyover.landing : 0;
+
+		if ( landing > 0 ) {
+
+			sun.fitBetween( flyover.footprint, cam.footprint, landing );
+			sun.update( _sunLook.lerpVectors( flyover.centre, cam.lookPoint, landing ), false );
+
+		} else {
+
+			sun.update( flyover ? flyover.centre : cam.lookPoint );
+
+		}
+
 		debris.update( frameDt );
 		wand.update( frameDt, race.cars );
 		occluders.update( frameDt, cam.camera, _camTarget );
@@ -1202,6 +1219,9 @@ async function init() {
 					screen: shell.state,
 					flyover: Boolean( flyover ),
 					carried: Boolean( player.carry ),
+					flying: vehicle.flying,
+					airborne: vehicle.flying || ! vehicle.grounded,
+					airtime: player.flight ? player.flight.time : 0,
 					offTrack: player.outTime > 0,
 					track: track.id,
 					car: settings.car,

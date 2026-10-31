@@ -5,11 +5,17 @@ import * as THREE from 'three';
 // where they're seen. The box is fixed per viewport (Camera.footprint) and
 // its centre snaps to whole shadow texels, so edges don't crawl as the
 // camera moves.
+//
+// The fly-over's box covers the whole track; over its landing the box eases
+// down to the chase view's (fitBetween), or every shadow would sharpen in one
+// frame when it ends.
 
 export const SUN_DIRECTION = new THREE.Vector3( 11.4, 15, - 5.3 ).normalize();
 
 const SUN_DISTANCE = 30;
 const MARGIN = 1.5;
+const _from = [ 0, 0, 0, 0 ];
+const _to = [ 0, 0, 0, 0 ];
 
 export class SunShadow {
 
@@ -32,8 +38,8 @@ export class SunShadow {
 
 	}
 
-	// footprint: ground points around the look point (see Camera.updateFootprint)
-	fit( footprint ) {
+	// The box round footprint (out: [ left, right, bottom, top ])
+	measure( footprint, out ) {
 
 		let minX = Infinity, maxX = - Infinity, minY = Infinity, maxY = - Infinity;
 
@@ -51,11 +57,38 @@ export class SunShadow {
 
 		}
 
+		out[ 0 ] = minX - MARGIN;
+		out[ 1 ] = maxX + MARGIN;
+		out[ 2 ] = minY - MARGIN;
+		out[ 3 ] = maxY + MARGIN;
+		return out;
+
+	}
+
+	// footprint: ground points around the look point (see Camera.updateFootprint)
+	fit( footprint ) {
+
+		this.apply( this.measure( footprint, _to ) );
+
+	}
+
+	// share of the way from one footprint's box to another's
+	fitBetween( from, to, share ) {
+
+		this.measure( from, _from );
+		this.measure( to, _to );
+		for ( let i = 0; i < 4; i ++ ) _to[ i ] = _from[ i ] + ( _to[ i ] - _from[ i ] ) * share;
+		this.apply( _to );
+
+	}
+
+	apply( box ) {
+
 		const camera = this.light.shadow.camera;
-		camera.left = minX - MARGIN;
-		camera.right = maxX + MARGIN;
-		camera.bottom = minY - MARGIN;
-		camera.top = maxY + MARGIN;
+		camera.left = box[ 0 ];
+		camera.right = box[ 1 ];
+		camera.bottom = box[ 2 ];
+		camera.top = box[ 3 ];
 		camera.near = 0.5;
 		camera.far = SUN_DISTANCE * 2;
 		camera.updateProjectionMatrix();
@@ -66,13 +99,21 @@ export class SunShadow {
 
 	}
 
-	update( lookPoint ) {
+	// snap: to whole texels. Pointless while the box is changing size.
+	update( lookPoint, snap = true ) {
 
 		const x = lookPoint.dot( this.right ), y = lookPoint.dot( this.up );
 
-		this.target.position.copy( lookPoint )
-			.addScaledVector( this.right, Math.round( x / this.texelX ) * this.texelX - x )
-			.addScaledVector( this.up, Math.round( y / this.texelY ) * this.texelY - y );
+		this.target.position.copy( lookPoint );
+
+		if ( snap ) {
+
+			this.target.position
+				.addScaledVector( this.right, Math.round( x / this.texelX ) * this.texelX - x )
+				.addScaledVector( this.up, Math.round( y / this.texelY ) * this.texelY - y );
+
+		}
+
 		this.target.updateMatrixWorld();
 
 		this.light.position.copy( this.target.position ).addScaledVector( SUN_DIRECTION, SUN_DISTANCE );

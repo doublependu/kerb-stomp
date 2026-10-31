@@ -80,6 +80,21 @@ export class TrackShape {
 
 		}
 
+		// Where cars take off (TakeOff.js): the lip, at the centre of a cell
+		// that's a crest of the profile, the straight road from there to the
+		// next corner, and the cells a flight can cross. Ordered tracks only.
+		this.ramps = ( track.ramps || [] ).map( ( cell ) => {
+
+			let next = cell + 1;
+			while ( this.cells[ next % n ][ 2 ] !== 'track-corner' ) next ++;
+			const s = ( this.cellStart[ cell ] + this.cellStart[ cell + 1 ] ) / 2;
+			return { cell, s, ahead: this.cellStart[ next ] - s, last: next - 1 };
+
+		} );
+
+		this.rampCells = new Set();
+		for ( const ramp of this.ramps ) for ( let i = ramp.cell; i <= ramp.last; i ++ ) this.rampCells.add( i );
+
 		// The cells in driving order (as listed, on ordered tracks; else by
 		// walking the centerline), for anything that needs each cell's way in
 		// and out

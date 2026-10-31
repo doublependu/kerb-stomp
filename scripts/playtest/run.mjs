@@ -6,6 +6,7 @@
 //   npm run playtest -- --no-record --url https://kerb-stomp.example.workers.dev/
 //   npm run playtest -- --scenario race --race-tracks classic,monza --race-skills average --npcs 4
 //   npm run playtest -- --scenario scenery,flyover --tier high   (a forced quality tier)
+//   npm run playtest -- --scenario flicker --tracks monaco,bathurst
 //
 // Recordings and reports go to playtests/ (gitignored).
 
@@ -56,6 +57,7 @@ const env = {
 	laps: Number( arg( 'laps', 3 ) ),
 	raceTracks: arg( 'race-tracks', 'classic' ).split( ',' ),
 	raceSkills: arg( 'race-skills', 'novice,average,expert' ).split( ',' ),
+	tracks: arg( 'tracks', null )?.split( ',' ) ?? null,
 	npcs: Number( arg( 'npcs', 4 ) ),
 	seed: Number( arg( 'seed', 1 ) ),
 	tier: arg( 'tier', null ),

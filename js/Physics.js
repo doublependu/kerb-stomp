@@ -7,6 +7,11 @@ const WALL_HALF_THICK = 0.1875;
 const ROAD_FRICTION = 5.0;
 const GRAVEL_FRICTION = 2.0;
 const WALL_HALF_HEIGHT = 1.125;
+const RAMP_WALL_HALF_HEIGHT = 3; // on the cells a flight crosses: a car in the air can't clear them
+
+// The spheres' gravity and drag, which a flight changes (TakeOff.js)
+export const GRAVITY_FACTOR = 1.5;
+export const SPHERE_DRAG = 0.1;
 
 const _a = new THREE.Vector3();
 const _b = new THREE.Vector3();
@@ -40,8 +45,9 @@ function upTriangle( positions, indices, a, b, c ) {
 }
 
 // Tracks with hills (TrackShape): walls as boxes tilted to the slope (none
-// on the outside of gravel cells: that's the cliff) and the hillside
-// terrain. Returns the bodies a car can drive on. The road itself is no
+// on the outside of gravel cells: that's the cliff, taller on a ramp's
+// cells, only those: the walls under a bridge mustn't come up through its
+// deck) and the hillside terrain. Returns the bodies a car can drive on. The road itself is no
 // collider here: see RoadTile.
 export function buildHillColliders( world, shape ) {
 
@@ -60,6 +66,7 @@ export function buildHillColliders( world, shape ) {
 
 		const s0 = shape.cellStart[ i ], s1 = shape.cellStart[ i + 1 ];
 		const mid = ( s0 + s1 ) / 2;
+		const halfHeight = shape.rampCells.has( i ) ? RAMP_WALL_HALF_HEIGHT : WALL_HALF_HEIGHT;
 
 		for ( const side of [ - 1, 1 ] ) {
 
@@ -83,10 +90,10 @@ export function buildHillColliders( world, shape ) {
 				_q.setFromRotationMatrix( _basis.makeBasis( _across, _upish, _along ) );
 
 				rigidBody.create( world, {
-					shape: box.create( { halfExtents: [ WALL_HALF_THICK, WALL_HALF_HEIGHT, len / 2 + 0.05 ] } ),
+					shape: box.create( { halfExtents: [ WALL_HALF_THICK, halfHeight, len / 2 + 0.05 ] } ),
 					motionType: MotionType.STATIC,
 					objectLayer: world._OL_STATIC,
-					position: [ ( _a.x + _b.x ) / 2 + _upish.x * WALL_HALF_HEIGHT, ( _a.y + _b.y ) / 2 + _upish.y * WALL_HALF_HEIGHT, ( _a.z + _b.z ) / 2 + _upish.z * WALL_HALF_HEIGHT ],
+					position: [ ( _a.x + _b.x ) / 2 + _upish.x * halfHeight, ( _a.y + _b.y ) / 2 + _upish.y * halfHeight, ( _a.z + _b.z ) / 2 + _upish.z * halfHeight ],
 					quaternion: [ _q.x, _q.y, _q.z, _q.w ],
 					friction: 0.0,
 					restitution: 0.1,
@@ -344,9 +351,9 @@ export function createSphereBody( world, spawnPos ) {
 		mass: 1000.0,
 		friction: 5.0,
 		restitution: 0.1,
-		linearDamping: 0.1,
+		linearDamping: SPHERE_DRAG,
 		angularDamping: 4.0,
-		gravityFactor: 1.5,
+		gravityFactor: GRAVITY_FACTOR,
 		motionQuality: MotionQuality.LINEAR_CAST,
 	} );
 

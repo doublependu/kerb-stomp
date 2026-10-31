@@ -9,6 +9,7 @@ import { LapCounter } from './LapTimer.js';
 import { resolveCarCollisions } from './CarCollisions.js';
 import { RUBBER_BAND, CLASSIC_AI_LAPS, CLASSIC_ACE, FIRST_LAP, ACES, correct, startFor, lean } from './Difficulty.js';
 import { racingLine } from './RacingLine.js';
+import { launch, land, flightOver } from './TakeOff.js';
 
 // The simulation: physics world, cars, laps and race order. No rendering or
 // DOM, so scripts/sim can run whole races in Node; main.js draws it.
@@ -149,8 +150,11 @@ export class Race {
 
 				const other = this.bodies.get( bodyA ) ? bodyB : bodyA;
 				const v = car.vehicle;
-				const impact = Math.abs( v.modelVelocity.x * car.forward.x + v.modelVelocity.z * car.forward.z );
-				this.events.onWallHit( car, impact, this.groundBodies.has( other ) );
+				const ground = this.groundBodies.has( other );
+
+				// How hard it came down, or how hard it went in nose first
+				const impact = ground ? Math.abs( v.sphereVel.y ) : Math.abs( v.modelVelocity.x * car.forward.x + v.modelVelocity.z * car.forward.z );
+				this.events.onWallHit( car, impact, ground );
 
 			},
 		};
@@ -189,6 +193,7 @@ export class Race {
 			kerb: 0, // 0–1: how much of the car is on the kerbs this step
 			gravel: false,
 			carry: null, // the wand's flight while it's carried
+			flight: null, // off a ramp (TakeOff.js)
 			lastGood: { s: 0, lateral: 0, distance: 0, index: null }, // last spot on the road
 			onRoad: true,
 			groundHeight: GROUND_Y,
@@ -379,6 +384,7 @@ export class Race {
 
 		const body = car.vehicle.rigidBody;
 		if ( ! body ) return;
+		if ( car.flight ) land( car );
 
 		rigidBody.setMotionType( this.world, body, carried ? MotionType.KINEMATIC : MotionType.DYNAMIC, ! carried );
 		rigidBody.setObjectLayer( this.world, body, carried ? this.world._OL_CARRIED : this.world._OL_MOVING );
@@ -556,7 +562,7 @@ export class Race {
 		car.kerb = 0;
 		car.gravel = false;
 		v.judder = 0;
-		if ( ! v.grounded || ! car.onRoad ) return;
+		if ( ! v.grounded || v.flying || ! car.onRoad ) return;
 
 		const s = car.proj.s;
 
@@ -595,9 +601,26 @@ export class Race {
 		const v = car.vehicle;
 		this.shape.surface( v.spherePos.x, v.spherePos.z, car.proj, _surface );
 		v.groundNormal.fromArray( _surface.normal );
-		v.grounded = v.spherePos.y - SPHERE_RADIUS - _surface.height < AIRBORNE;
+		const gap = v.spherePos.y - SPHERE_RADIUS - _surface.height;
+		v.grounded = gap < AIRBORNE;
 		car.onRoad = _surface.road;
 		car.groundHeight = _surface.height;
+		if ( car.flight && flightOver( car.flight, gap, v.sphereVel.y, STEP ) ) land( car );
+
+	}
+
+	// Over a ramp's lip this step, on the road with its wheels down
+	takeOff( car, prevS ) {
+
+		const v = car.vehicle;
+		const s = car.proj.s;
+		if ( car.flight || ! v.grounded || ! car.onRoad || v.tumbling || v.flipped || car.carry ) return;
+
+		for ( const ramp of this.shape.ramps ) {
+
+			if ( prevS < ramp.s && s >= ramp.s && s - prevS < MAX_STEP ) car.flight = launch( this.world, car, ramp, this.line );
+
+		}
 
 	}
 
@@ -607,6 +630,7 @@ export class Race {
 		const prevS = car.proj.s;
 		car.proj = this.line.project( v.spherePos.x, v.spherePos.z, car.proj.index );
 		car.distance += this.line.closed ? wrapHalf( car.proj.s - prevS, this.line.length ) : car.proj.s - prevS;
+		this.takeOff( car, prevS );
 
 		const counter = car.counter;
 
@@ -734,9 +758,10 @@ export class Race {
 const NO_INPUT = { x: 0, z: 0, mode: 'car' };
 const SPHERE_RADIUS = 0.5;
 
-// Clear of the ground by this much (m) counts as flying: no drive, little
-// steering. Small hops over bumps keep control.
+// Clear of the ground by this much (m) counts as flying: no control at all
+// (Vehicle). Small hops over bumps keep it.
 const AIRBORNE = 0.3;
+const MAX_STEP = 3; // m a car can cover along the road in a step (more is a wrap or a wand)
 const _up = new THREE.Vector3( 0, 1, 0 );
 const _carryPrev = new THREE.Vector3();
 const _carryQuaternion = new THREE.Quaternion();

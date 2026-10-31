@@ -19,9 +19,11 @@ import { SCENERY } from '../js/SceneryList.js';
 import { WALL_OUTER } from '../js/TrackShape.js';
 import { RACE_LINES } from '../js/RaceLines.js';
 import { lineHash } from '../js/RacingLine.js';
+import { TAKEOFF, airtime } from '../js/TakeOff.js';
 
 const GRAVITY = 9.81 * 1.5;
 const MAX_GRADIENT = 0.2;
+const MIN_RUNOUT = 15; // m of straight after a ramp
 const MAX_TURN = 15; // ° a stand's or a pit's front may be off the road
 const STAND_GAP = 0.6; // m a stand's front may be behind the wall's outer face
 const STAND_TURN = 2; // ° a stand may be off square to the road
@@ -95,6 +97,16 @@ for ( const track of TRACKS ) {
 			const radius = 1 / c.bend;
 			const takeoff = Math.sqrt( GRAVITY * radius );
 			console.log( `  crest at ${ c.s.toFixed( 0 ) } m (cell ${ line.cellAt( c.s ) }${ shape.isUnsealed( c.s ) ? ', gravel' : '' }): radius ${ radius.toFixed( 1 ) } m, airborne above ${ takeoff.toFixed( 1 ) } m/s` );
+
+		}
+
+		// A ramp: a real lip, with room to land before the next corner
+		for ( const ramp of shape.ramps ) {
+
+			const before = line.heightAt( ramp.s - 3 ), lip = line.heightAt( ramp.s ), after = line.heightAt( ramp.s + 3 );
+			console.log( `  ramp at ${ ramp.s.toFixed( 0 ) } m (cell ${ ramp.cell }): ${ ramp.ahead.toFixed( 0 ) } m to the next corner, ${ airtime( TAKEOFF.fullSpeed, ramp.ahead ).toFixed( 1 ) } s at full speed` );
+			if ( ramp.ahead < MIN_RUNOUT ) { console.log( `  ✗ under ${ MIN_RUNOUT } m of straight after the ramp` ); failed ++; }
+			if ( before >= lip || after >= lip ) { console.log( '  ✗ not a crest: the road rises past the lip' ); failed ++; }
 
 		}
 
